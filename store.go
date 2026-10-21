@@ -26,10 +26,12 @@ type Entry struct {
 	Raw  string // 日時列。触っていない行はこのまま書き戻す
 	Text string
 	At   time.Time
+	End  time.Time // 終わり(無ければゼロ)
 	Kind int
 	rule rule
-	min  int // 繰り返しの時刻(分)、-1 = 終日
-	base int // 起点の年(\a \y 用)
+	min  int    // 繰り返しの時刻(分)、-1 = 終日
+	emin int    // 繰り返しの終わり(分)、-1 = 無し
+	base int    // 起点の年(\a \y 用)
 	src  string // 読み込んだ行そのもの。変更したら空にする
 	file *File
 }
@@ -71,7 +73,17 @@ func (f *File) remove(e *Entry) {
 type occ struct {
 	e     *Entry
 	at    time.Time
+	end   time.Time // 終わり(無ければゼロ)
 	timed bool
+}
+
+// endAt は start の日の分 m を終わりにする。開始以前なら翌日。
+func endAt(start time.Time, m int) time.Time {
+	t := day(start).Add(time.Duration(m) * time.Minute)
+	if !t.After(start) {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t
 }
 
 // on は d に当たれば occ を返す。
@@ -79,14 +91,19 @@ func (e *Entry) on(d time.Time) (occ, bool) {
 	switch e.Kind {
 	case kDate, kTime:
 		if day(e.At).Equal(d) {
-			return occ{e, e.At, e.Kind == kTime}, true
+			return occ{e, e.At, e.End, e.Kind == kTime}, true
 		}
 	case kRepeat:
 		if e.rule(d) && (e.base == 0 || d.Year() >= e.base) {
 			if e.min >= 0 {
-				return occ{e, d.Add(time.Duration(e.min) * time.Minute), true}, true
+				at := d.Add(time.Duration(e.min) * time.Minute)
+				o := occ{e: e, at: at, timed: true}
+				if e.emin >= 0 {
+					o.end = endAt(at, e.emin)
+				}
+				return o, true
 			}
-			return occ{e, d, false}, true
+			return occ{e: e, at: d}, true
 		}
 	}
 	return occ{}, false
@@ -141,9 +158,40 @@ func formatWhen(t time.Time, k int) string {
 }
 
 var (
-	reRel  = regexp.MustCompile(`^\+(\d+)(?:\s+(\d{1,2}:\d{2}))?$`)
-	reHHMM = regexp.MustCompile(`^\d{1,2}:\d{2}$`)
+	reRel  = regexp.MustCompile(`^\+(\d+)(?:\s+(\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?))?$`)
+	reHHMM = regexp.MustCompile(`^\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?$`)
+	reEnd  = regexp.MustCompile(`^(.*\d:\d{2})-(\d{1,2}):(\d{2})$`)
 )
+
+// splitEnd は末尾の「-15:30」を外して分で返す(無ければ -1)。
+func splitEnd(s string) (string, int) {
+	m := reEnd.FindStringSubmatch(s)
+	if m == nil {
+		return s, -1
+	}
+	h, _ := strconv.Atoi(m[2])
+	mm, _ := strconv.Atoi(m[3])
+	if h > 24 || mm > 59 {
+		return s, -1
+	}
+	return m[1], h*60 + mm
+}
+
+// canon は日付・日時(と終わり)を正規形にする。
+func canon(s string) (string, bool) {
+	st, em := splitEnd(s)
+	t, k := parseWhen(st)
+	if k == kUndef || (em >= 0 && k != kTime) {
+		return "", false
+	}
+	out := formatWhen(t, k)
+	if em >= 0 {
+		out += fmt.Sprintf("-%02d:%02d", em/60, em%60)
+	}
+	return out, true
+}
+
+var ()
 
 // parseInput は人が打つ日時を正規化する。
 // 空=未定 / 2026-10-25 14:00 / 10/25 14:00 / 10/25 / 14:00(base の日) / +3 / +3 9:00(今日から)
@@ -163,27 +211,33 @@ func parseInput(s string, base time.Time) (string, error) {
 	if reHHMM.MatchString(s) {
 		s = day(base).Format("2006-01-02 ") + s
 	}
-	if t, k := parseWhen(s); k != kUndef {
-		return formatWhen(t, k), nil
+	if c, ok := canon(s); ok {
+		return c, nil
 	}
-	if _, _, _, err := parseRule(s); err == nil {
+	if _, _, _, _, err := parseRule(s); err == nil {
 		return s, nil
 	} else if strings.ContainsAny(s, "=<>") {
 		return "", fmt.Errorf("繰り返しが読めない: %v", err)
 	}
-	if t, k := parseWhen(fmt.Sprintf("%d-%s", base.Year(), s)); k != kUndef {
-		return formatWhen(t, k), nil
+	if c, ok := canon(fmt.Sprintf("%d-%s", base.Year(), s)); ok {
+		return c, nil
 	}
 	return "", fmt.Errorf("日時が読めない: %q", s)
 }
 
 func (e *Entry) setRaw(raw string) {
 	e.Raw, e.src = raw, ""
-	e.At, e.Kind = parseWhen(raw)
-	e.rule = nil
+	e.rule, e.End = nil, time.Time{}
+	st, em := splitEnd(norm(raw))
+	e.At, e.Kind = parseWhen(st)
+	if em >= 0 && e.Kind == kTime {
+		e.End = endAt(e.At, em)
+	} else if em >= 0 {
+		e.Kind = kUndef
+	}
 	if e.Kind == kUndef {
-		if r, min, base, err := parseRule(norm(raw)); err == nil {
-			e.Kind, e.rule, e.min, e.base = kRepeat, r, min, base
+		if r, min, emin, base, err := parseRule(norm(raw)); err == nil {
+			e.Kind, e.rule, e.min, e.emin, e.base = kRepeat, r, min, emin, base
 		}
 	}
 }

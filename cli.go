@@ -73,7 +73,7 @@ func list(w io.Writer, files []*File, past, days int, undef bool) {
 	}
 	fmt.Fprintln(w, stHead.Render("未定"))
 	for _, e := range us {
-		fmt.Fprintln(w, render(m.entrySegs("  ", row{e: e, date: today, hour: -1})))
+		fmt.Fprintln(w, render(m.entrySegs("  ", row{e: e, date: today, slot: -1})))
 	}
 }
 

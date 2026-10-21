@@ -22,8 +22,8 @@ const usage = `nichiji — CSV(日時,内容)の予定表
   nichiji add [-f ファイル] [-d 日時] 内容        1行追記。-d 無しは未定メモ
   共通: -now "2026-12-24 10:00"   今日を差し替える(確認用)
 
-日時: 2026-10-25 14:00 / 10/25 14:00 / 10/25 / 14:00 / +3 / +3 9:00 / 空=未定
-繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00(毎週)
+日時: 2026-10-25 14:00 / 14:00-15:30(終わりつき) / 10/25 / 14:00 / +3 / +3 9:00 / 空=未定
+繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
           d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
 CSV の空行と # で始まる行は無視し、保存してもそのまま残る
 既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
@@ -115,10 +115,13 @@ const (
 type row struct {
 	e     *Entry
 	at    time.Time
+	end   time.Time
 	timed bool
 	date  time.Time
-	hour  int // -1 = 終日・見出し
+	slot  int // 時間帯の始まり(0時からの分)、-1 = 終日・見出し
 	head  bool
+	cont  bool // 前の時間帯から続いている予定
+	more  int  // cont のとき、ほかに続いている数
 }
 
 type model struct {
@@ -135,6 +138,7 @@ type model struct {
 	inRow  row
 	msg    string
 	help   bool
+	step   int // 日表示の刻み(分)
 }
 
 var (
@@ -152,10 +156,21 @@ var (
 func newModel() *model {
 	ti := textinput.New()
 	ti.CharLimit = 0
-	return &model{cur: day(now()), view: vWeek, w: 80, h: 24, in: ti}
+	return &model{cur: day(now()), view: vWeek, w: 80, h: 24, in: ti, step: 60}
 }
 
-func (m *model) Init() tea.Cmd { return nil }
+func (m *model) Init() tea.Cmd { return tick() }
+
+// tick は次の分の頭で時計を進める。
+type tickMsg struct{}
+
+func tick() tea.Cmd {
+	n := now()
+	return tea.Tick(n.Truncate(time.Minute).Add(time.Minute).Sub(n), func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// mins は d の0時から t までの分(前日なら負、翌日なら1440超)。
+func mins(t, d time.Time) int { return int(t.Sub(d) / time.Minute) }
 
 type editedMsg struct{ err error }
 
@@ -187,11 +202,11 @@ func occsOn(es []*Entry, d time.Time) []occ {
 }
 
 func occRow(o occ, d time.Time) row {
-	h := -1
+	sl := -1
 	if o.timed {
-		h = o.at.Hour()
+		sl = max(0, mins(o.at, d))
 	}
-	return row{e: o.e, at: o.at, timed: o.timed, date: d, hour: h}
+	return row{e: o.e, at: o.at, end: o.end, timed: o.timed, date: d, slot: sl}
 }
 
 func (m *model) rows() []row {
@@ -205,23 +220,44 @@ func (m *model) rows() []row {
 				rs = append(rs, occRow(o, d))
 			}
 		}
-		for h := 0; h < 24; h++ {
+		// 前日から日付をまたいで続く予定も入れる
+		spans := os
+		for _, o := range m.occsOn(d.AddDate(0, 0, -1)) {
+			if o.end.After(d) {
+				spans = append(spans, o)
+			}
+		}
+		for t := 0; t < 1440; t += m.step {
 			n := 0
 			for _, o := range os {
-				if o.timed && o.at.Hour() == h {
-					rs = append(rs, occRow(o, d))
+				if st := mins(o.at, d); o.timed && st >= t && st < t+m.step {
+					r := occRow(o, d)
+					r.slot = t
+					rs = append(rs, r)
 					n++
 				}
 			}
-			if n == 0 {
-				rs = append(rs, row{date: d, hour: h})
+			if n > 0 {
+				continue
 			}
+			r := row{date: d, slot: t}
+			for _, o := range spans {
+				if o.timed && !o.end.IsZero() && mins(o.at, d) < t && mins(o.end, d) > t {
+					if r.e == nil {
+						r = occRow(o, d)
+						r.slot, r.cont = t, true
+					} else {
+						r.more++
+					}
+				}
+			}
+			rs = append(rs, r)
 		}
 	case vWeek:
 		s := weekStart(m.cur)
 		for i := 0; i < 7; i++ {
 			d := s.AddDate(0, 0, i)
-			rs = append(rs, row{date: d, hour: -1, head: true})
+			rs = append(rs, row{date: d, slot: -1, head: true})
 			for _, o := range m.occsOn(d) {
 				rs = append(rs, occRow(o, d))
 			}
@@ -229,7 +265,7 @@ func (m *model) rows() []row {
 	case vInbox:
 		for _, e := range m.all() {
 			if e.Kind == kUndef {
-				rs = append(rs, row{e: e, date: day(m.cur), hour: -1})
+				rs = append(rs, row{e: e, date: day(m.cur), slot: -1})
 			}
 		}
 	}
@@ -239,7 +275,7 @@ func (m *model) rows() []row {
 func (m *model) curRow() (row, bool) {
 	rs := m.rows()
 	if m.sel < 0 || m.sel >= len(rs) {
-		return row{date: day(m.cur), hour: -1}, false
+		return row{date: day(m.cur), slot: -1}, false
 	}
 	return rs[m.sel], true
 }
@@ -251,9 +287,9 @@ func (m *model) resetSel() {
 	now := now()
 	switch m.view {
 	case vDay:
-		want := 9
+		want := 9 * 60
 		if day(m.cur).Equal(day(now)) {
-			want = now.Hour()
+			want = mins(now, day(now)) / m.step * m.step
 		}
 		if !day(m.cur).Equal(day(now)) {
 			for i, r := range rs {
@@ -264,7 +300,7 @@ func (m *model) resetSel() {
 			}
 		}
 		for i, r := range rs {
-			if r.hour == want {
+			if r.slot == want {
 				m.sel = i
 				return
 			}
@@ -350,6 +386,8 @@ func (m *model) reload() {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tickMsg:
+		return m, tick()
 	case editedMsg:
 		m.reload()
 		if msg.err != nil {
@@ -396,8 +434,8 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e := &Entry{Text: val, file: f}
 			if m.inMode == inSlot {
 				r := m.inRow
-				if r.hour >= 0 {
-					e.setRaw(formatWhen(r.date.Add(time.Duration(r.hour)*time.Hour), kTime))
+				if r.slot >= 0 {
+					e.setRaw(formatWhen(r.date.Add(time.Duration(r.slot)*time.Minute), kTime))
 				} else {
 					e.setRaw(formatWhen(r.date, kDate))
 				}
@@ -447,13 +485,28 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.msg = ""
 	r, ok := m.curRow()
 	if m.view == vYear {
-		r, ok = row{date: day(m.cur), hour: -1}, false
+		r, ok = row{date: day(m.cur), slot: -1}, false
 	}
 	switch k.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "?":
 		m.help = !m.help
+	case "z":
+		if m.view == vDay {
+			at := r.slot
+			m.step = map[int]int{60: 30, 30: 15, 15: 60}[m.step]
+			m.resetSel()
+			if at >= 0 {
+				for i, rr := range m.rows() {
+					if rr.slot == at/m.step*m.step {
+						m.sel = i
+						break
+					}
+				}
+			}
+			m.msg = fmt.Sprintf("%d分刻み", m.step)
+		}
 	case "d":
 		m.view = vDay
 		m.resetSel()
@@ -498,8 +551,8 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.inRow = r
 		at := formatWhen(r.date, kDate)
-		if r.hour >= 0 {
-			at = formatWhen(r.date.Add(time.Duration(r.hour)*time.Hour), kTime)
+		if r.slot >= 0 {
+			at = formatWhen(r.date.Add(time.Duration(r.slot)*time.Minute), kTime)
 		}
 		m.startInput(inSlot, at+" > ", "")
 	case "e":
@@ -625,6 +678,8 @@ func (m *model) entrySegs(indent string, r row) []seg {
 		when = seg{"?" + e.Raw + " ", stWarn}
 	case e.Kind == kUndef:
 		when = seg{"未定 ", stDim}
+	case r.timed && !r.end.IsZero():
+		when = seg{r.at.Format("15:04") + "-" + r.end.Format("15:04"), stPlain}
 	case r.timed:
 		when = seg{r.at.Format("15:04"), stPlain}
 	default:
@@ -653,15 +708,22 @@ func (m *model) rowSegs(r row) []seg {
 		return []seg{{dateLabel(r.date), st}}
 	case r.e != nil && m.view == vWeek:
 		return m.entrySegs("  ", r)
-	case r.e != nil:
+	case r.e != nil && !r.cont:
 		return m.entrySegs(" ", r)
-	default:
-		st := stDim
-		if r.date.Equal(today) && r.hour == now().Hour() {
-			st = stToday
-		}
-		return []seg{{fmt.Sprintf(" %02d:00", r.hour), st}, {"  ·", stDim}}
 	}
+	st := stDim
+	if nm := mins(now(), today); r.date.Equal(today) && nm >= r.slot && nm < r.slot+m.step {
+		st = stToday
+	}
+	label := seg{fmt.Sprintf(" %02d:%02d", r.slot/60, r.slot%60), st}
+	if !r.cont {
+		return []seg{label, {"  ·", stDim}}
+	}
+	txt := r.e.textOn(r.date)
+	if r.more > 0 {
+		txt += fmt.Sprintf(" ほか%d", r.more)
+	}
+	return []seg{label, {"  │ " + txt, stDim}}
 }
 
 func (m *model) View() string {
@@ -672,6 +734,9 @@ func (m *model) View() string {
 	switch m.view {
 	case vDay:
 		title = fmt.Sprintf("%d年 %s", d.Year(), dateLabel(d))
+		if m.step != 60 {
+			title += fmt.Sprintf("  %d分刻み", m.step)
+		}
 	case vWeek:
 		y, wk := d.ISOWeek()
 		s := weekStart(d)
@@ -689,6 +754,7 @@ func (m *model) View() string {
 		}
 		tabs = append(tabs, seg{" " + n, st})
 	}
+	tabs = append(tabs, seg{"  " + now().Format("15:04"), stToday})
 	title = line(append([]seg{{title + "  ", stHead}}, tabs...), m.w, false)
 
 	if m.view == vYear {
@@ -727,7 +793,7 @@ func (m *model) footer() string {
 		return line([]seg{{m.msg, stWarn}}, m.w, false)
 	}
 	if m.help {
-		return line([]seg{{"a:メモ A:ここに追加 e:内容 s/Enter:日時 x:削除 E:エディタ d/w/y/u:日週年未定 h/l:前後 H/L:月(年) t:今日 Tab:書込先 r:再読込 q:終了", stDim}}, m.w, false)
+		return line([]seg{{"a:メモ A:ここに追加 e:内容 s/Enter:日時 x:削除 E:エディタ z:刻み d/w/y/u:日週年未定 h/l:前後 H/L:月(年) t:今日 Tab:書込先 r:再読込 q:終了", stDim}}, m.w, false)
 	}
 	return line([]seg{{"書込: " + m.files[m.target].Name(), stDim}, {"  ?:ヘルプ", stDim}}, m.w, false)
 }

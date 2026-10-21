@@ -9,7 +9,7 @@ import (
 	"unicode"
 )
 
-// 繰り返しの書き方(when を真似た小さな式)。末尾に " 10:00" を付けると時刻つき。
+// 繰り返しの書き方(when を真似た小さな式)。末尾に " 10:00" や " 10:00-11:30" を付けると時刻つき。
 //
 //	*-12-25        毎年12月25日
 //	1990*-08-29    毎年。内容の \a が年齢、\y が起点の年になる
@@ -18,6 +18,7 @@ import (
 //	w=土&b=1       毎月最後の土曜(a=第n週、b=最後からn週目)
 //	m=1&w=月&a=2   1月の第2月曜
 //	w=金&!(m=12&d=25)
+//	w=月 10:00-11:30   終わりの時刻も書ける
 //
 // 変数 w 曜日 m 月 d 日 y 年 a 第n(1〜7日が1) b 最後からn n 月の日数
 // 演算 = != < > <= >=、& | ! ( )
@@ -25,31 +26,39 @@ type rule func(t time.Time) bool
 
 var (
 	reYearly  = regexp.MustCompile(`^(\d{4})?\*-(\d{1,2})-(\d{1,2})$`)
-	reRuleTim = regexp.MustCompile(`^(.*\S)\s+(\d{1,2}):(\d{2})$`)
+	reRuleTim = regexp.MustCompile(`^(.*\S)\s+(\d{1,2}):(\d{2})(?:-(\d{1,2}):(\d{2}))?$`)
 )
 
-// parseRule は繰り返しを読む。min は時刻(分、無ければ -1)、base は起点の年(無ければ 0)。
-func parseRule(s string) (r rule, min, base int, err error) {
-	min = -1
+// parseRule は繰り返しを読む。min・emin は時刻と終わり(分、無ければ -1)、base は起点の年(無ければ 0)。
+func parseRule(s string) (r rule, min, emin, base int, err error) {
+	min, emin = -1, -1
 	if m := reRuleTim.FindStringSubmatch(s); m != nil {
 		h, _ := strconv.Atoi(m[2])
 		mm, _ := strconv.Atoi(m[3])
 		if h > 23 || mm > 59 {
-			return nil, 0, 0, fmt.Errorf("時刻が変: %s", s)
+			return nil, 0, 0, 0, fmt.Errorf("時刻が変: %s", s)
 		}
 		s, min = m[1], h*60+mm
+		if m[4] != "" {
+			h, _ = strconv.Atoi(m[4])
+			mm, _ = strconv.Atoi(m[5])
+			if h > 24 || mm > 59 {
+				return nil, 0, 0, 0, fmt.Errorf("終わりの時刻が変: %s", s)
+			}
+			emin = h*60 + mm
+		}
 	}
 	if m := reYearly.FindStringSubmatch(s); m != nil {
 		mo, _ := strconv.Atoi(m[2])
 		d, _ := strconv.Atoi(m[3])
 		if mo < 1 || mo > 12 || d < 1 || d > 31 {
-			return nil, 0, 0, fmt.Errorf("日付が変: %s", s)
+			return nil, 0, 0, 0, fmt.Errorf("日付が変: %s", s)
 		}
 		base, _ = strconv.Atoi(m[1])
-		return func(t time.Time) bool { return int(t.Month()) == mo && t.Day() == d }, min, base, nil
+		return func(t time.Time) bool { return int(t.Month()) == mo && t.Day() == d }, min, emin, base, nil
 	}
 	if !strings.ContainsAny(s, "=<>") {
-		return nil, 0, 0, fmt.Errorf("繰り返しではない")
+		return nil, 0, 0, 0, fmt.Errorf("繰り返しではない")
 	}
 	p := &parser{toks: tokenize(s)}
 	r, err = p.or()
@@ -57,9 +66,9 @@ func parseRule(s string) (r rule, min, base int, err error) {
 		err = fmt.Errorf("余計な %q", p.toks[p.i])
 	}
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, 0, err
 	}
-	return r, min, 0, nil
+	return r, min, emin, 0, nil
 }
 
 func tokenize(s string) []string {
