@@ -25,6 +25,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 日時: 2026-10-25 14:00 / 14:00-15:30(終わりつき) / 10/25 / 14:00 / +3 / +3 9:00 / 空=未定
 繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
           d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
+1ファイル = 1人(1台): 同じファイルで時刻が重なる予定は入れられない(別ファイルは可)
 CSV の空行と # で始まる行は無視し、保存してもそのまま残る
 既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
 `
@@ -58,7 +59,16 @@ func main() {
 		}
 		raw, err := parseInput(*when, now())
 		if err == nil {
-			err = appendLine(*file, raw, text)
+			var f *File
+			if f, err = load(*file); err == nil {
+				e := &Entry{Text: text, file: f}
+				e.setRaw(raw)
+				if o, bad := e.clash(f); bad {
+					err = clashMsg(o)
+				} else {
+					err = appendLine(*file, raw, text)
+				}
+			}
 		}
 		if err != nil {
 			die(err)
@@ -138,7 +148,8 @@ type model struct {
 	inRow  row
 	msg    string
 	help   bool
-	step   int // 日表示の刻み(分)
+	step   int    // 日表示の刻み(分)
+	hint   string // 入力中に上に出す例
 }
 
 var (
@@ -349,7 +360,7 @@ func (m *model) startInput(mode int, prompt, val string) {
 	m.in.SetValue(val)
 	m.in.CursorEnd()
 	m.in.Focus()
-	m.msg = ""
+	m.msg, m.hint = "", ""
 }
 
 // commit は変更したファイルを書く。失敗したら読み直してメモリ側を捨てる。
@@ -440,6 +451,10 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 					e.setRaw(formatWhen(r.date, kDate))
 				}
 			}
+			if o, bad := e.clash(f); bad {
+				m.msg = clashMsg(o).Error()
+				return m, nil
+			}
 			f.add(e)
 			m.commit(f)
 			if e.Kind == kUndef {
@@ -463,7 +478,14 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.msg = err.Error()
 				return m, nil
 			}
+			oldRaw, oldSrc := m.inE.Raw, m.inE.src
 			m.inE.setRaw(raw)
+			if o, bad := m.inE.clash(m.inE.file); bad {
+				m.inE.setRaw(oldRaw)
+				m.inE.src = oldSrc
+				m.msg = clashMsg(o).Error()
+				return m, nil
+			}
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 		}
@@ -570,7 +592,8 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if ok && r.e != nil {
 			m.inE = r.e
-			m.startInput(inWhen, "日時(10/25 14:00・14:00・+3・*/12/25・w=日 10:00・空=未定)> ", r.e.Raw)
+			m.startInput(inWhen, "日時> ", r.e.Raw)
+			m.hint = "例 10/25 14:00-15:00・14:00・+3・*/12/25・w=日 10:00・空=未定"
 		}
 	case "x":
 		if ok && r.e != nil {
@@ -689,6 +712,11 @@ func (m *model) entrySegs(indent string, r row) []seg {
 	if e.Kind == kRepeat {
 		rep = seg{"↻", stDim}
 	}
+	if r.timed {
+		if _, bad := e.clashOn(e.file, day(r.at)); bad {
+			rep = seg{"!", stWarn}
+		}
+	}
 	// 内容を先に削らせないよう、タグは内容の前に置く
 	return []seg{{indent, stPlain}, when, rep, m.tag(e), {" " + strings.ReplaceAll(e.textOn(r.date), "\n", "⏎"), stPlain}}
 }
@@ -728,6 +756,9 @@ func (m *model) rowSegs(r row) []seg {
 
 func (m *model) View() string {
 	bodyH := max(1, m.h-2)
+	if m.inMode != inNone && m.inMode != inDelete && (m.msg != "" || m.hint != "") {
+		bodyH = max(1, bodyH-1) // 入力行の上に注意を出す
+	}
 	var title string
 	var body []string
 	d := day(m.cur)
@@ -787,6 +818,12 @@ func (m *model) footer() string {
 	case inNone:
 	default:
 		m.in.Width = max(10, m.w-runewidth.StringWidth(m.in.Prompt)-1)
+		if m.msg != "" {
+			return line([]seg{{m.msg, stWarn}}, m.w, false) + "\n" + m.in.View()
+		}
+		if m.hint != "" {
+			return line([]seg{{m.hint, stDim}}, m.w, false) + "\n" + m.in.View()
+		}
 		return m.in.View()
 	}
 	if m.msg != "" {

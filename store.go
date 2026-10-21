@@ -424,3 +424,66 @@ func weekStart(t time.Time) time.Time {
 	d := day(t)
 	return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
 }
+
+// ---- 重なり ----
+// 1ファイル = 1人(1台)。同じファイルの中で時刻つきの予定が重なるのを防ぐ。
+// 終わりの無い予定は開始の1分だけを占める。終日・未定は数えない。
+
+func span(o occ) (time.Time, time.Time, bool) {
+	if !o.timed {
+		return time.Time{}, time.Time{}, false
+	}
+	if o.end.IsZero() {
+		return o.at, o.at.Add(time.Minute), true
+	}
+	return o.at, o.end, true
+}
+
+func overlap(a, b occ) bool {
+	as, ae, ok1 := span(a)
+	bs, be, ok2 := span(b)
+	return ok1 && ok2 && as.Before(be) && bs.Before(ae)
+}
+
+// clashOn は d に現れる e が、同じファイルの他の予定と重なるかを見る。
+func (e *Entry) clashOn(f *File, d time.Time) (occ, bool) {
+	o, ok := e.on(d)
+	if !ok || !o.timed {
+		return occ{}, false
+	}
+	for _, x := range f.Entries() {
+		if x == e {
+			continue
+		}
+		for i := -1; i <= 1; i++ { // 日付をまたぐ予定があるので前後の日も
+			if xo, ok := x.on(d.AddDate(0, 0, i)); ok && overlap(o, xo) {
+				return xo, true
+			}
+		}
+	}
+	return occ{}, false
+}
+
+// clash は e を f に置いたときに重なる相手を探す。繰り返しは今日から1年分を見る。
+func (e *Entry) clash(f *File) (occ, bool) {
+	switch e.Kind {
+	case kTime:
+		return e.clashOn(f, day(e.At))
+	case kRepeat:
+		t := day(now())
+		for i := 0; i <= 366; i++ {
+			if o, ok := e.clashOn(f, t.AddDate(0, 0, i)); ok {
+				return o, true
+			}
+		}
+	}
+	return occ{}, false
+}
+
+func clashMsg(o occ) error {
+	t := o.at.Format("15:04")
+	if !o.end.IsZero() {
+		t += "-" + o.end.Format("15:04")
+	}
+	return fmt.Errorf("重なる: %d/%d %s %s", o.at.Month(), o.at.Day(), t, o.e.textOn(day(o.at)))
+}
