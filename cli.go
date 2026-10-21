@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
+
+	"github.com/charmbracelet/x/term"
 )
 
 var nowShift time.Duration
@@ -31,7 +34,19 @@ func setNow(s string) error {
 var dayWords = map[int]string{-1: "昨日", 0: "今日", 1: "明日", 2: "明後日"}
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
-func list(w io.Writer, files []*File, past, days int, undef bool) {
+func list(w io.Writer, files []*File, past, days int, undef, cut bool) {
+	width := 0 // 0 = 切らない(パイプのときは全文を出す)
+	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {
+		if cw, _, err := term.GetSize(fd); err == nil {
+			width = cw
+		}
+	}
+	render := func(segs []seg) string {
+		if width > 0 {
+			return line(segs, width, false)
+		}
+		return render(segs)
+	}
 	m := &model{files: files}
 	today := day(now())
 	n := 0

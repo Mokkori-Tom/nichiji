@@ -20,6 +20,9 @@ const usage = `nichiji — CSV(日時,内容)の予定表
   nichiji [ファイル|ディレクトリ ...]          TUI。最初のファイルが書込先(Tab で切替)
   nichiji ls [-days 14] [-past 0] [-u] [ファイル ...]   直近の予定を表示して終わる
   nichiji add [-f ファイル] [-d 日時] 内容        1行追記。-d 無しは未定メモ
+  nichiji set -f ファイル (-match 語 | -at 日時) [-status 完了] [-end now|+30|15:20] [-d 日時] [-note 結果] [-text 内容] [-force]
+                                               1件を書き換える(重なると拒否)
+  nichiji done -f ファイル -match 語 [-note 結果]  = set -status 完了 -end now
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] ファイル ...
                                                全員が空いている枠を探す
   共通: -now "2026-12-24 10:00"   今日を差し替える(確認用)
@@ -28,6 +31,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
           d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
 1ファイル = 1人(1台): 同じファイルで時刻が重なる予定は入れられない(別ファイルは可)
+内容の先頭の [予約] [実行中] は「まだ終わっていない」印。終わりの時刻を過ぎると ⏰ が付く
 CSV の空行と # で始まる行は無視し、保存してもそのまま残る
 既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
 `
@@ -35,7 +39,7 @@ CSV の空行と # で始まる行は無視し、保存してもそのまま残�
 func main() {
 	sub := ""
 	args := os.Args[1:]
-	if len(args) > 0 && (args[0] == "add" || args[0] == "ls" || args[0] == "free") {
+	if len(args) > 0 && strings.Contains(" add ls free set done ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
@@ -49,6 +53,15 @@ func main() {
 	length := fs.Int("len", 60, "free で必要な長さ(分)")
 	fromS := fs.String("from", "9:00", "free で1日の探し始め")
 	toS := fs.String("to", "18:00", "free で1日の探し終わり")
+	var so setOpts
+	fs.StringVar(&so.match, "match", "", "set: 内容の部分一致で選ぶ")
+	fs.StringVar(&so.at, "at", "", "set: 開始の日時で選ぶ")
+	fs.StringVar(&so.end, "end", "", "set: 終わり now / +30 / 15:20")
+	fs.StringVar(&so.st, "status", "", "set: 先頭の [状態] を書き換える")
+	fs.StringVar(&so.note, "note", "", "set: 内容の末尾に「 | 」で足す")
+	fs.StringVar(&so.text, "text", "", "set: 内容を丸ごと置き換える")
+	fs.BoolVar(&so.force, "force", false, "set: 重なっても書く")
+	full := fs.Bool("full", false, "ls: 端末の幅で切らない")
 	fs.Parse(args)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -56,6 +69,20 @@ func main() {
 		}
 	}
 	switch sub {
+	case "set", "done":
+		if sub == "done" {
+			so.st = "完了"
+			if so.end == "" {
+				so.end, so.softEnd = "now", true
+			}
+		}
+		so.when = *when
+		out, err := setEntry(*file, so)
+		if err != nil {
+			die(err)
+		}
+		fmt.Println(out)
+		return
 	case "add":
 		text := strings.Join(fs.Args(), " ")
 		if text == "" {
@@ -93,7 +120,7 @@ func main() {
 		files = append(files, f)
 	}
 	if sub == "ls" {
-		list(os.Stdout, files, *past, *days, *undef)
+		list(os.Stdout, files, *past, *days, *undef, !*full)
 		return
 	}
 	if sub == "free" {
@@ -745,6 +772,9 @@ func (m *model) entrySegs(indent string, r row) []seg {
 	if r.timed {
 		if _, bad := e.clashOn(e.file, day(r.at)); bad {
 			rep = seg{"!", stWarn}
+		}
+		if overdue(occ{e: e, at: r.at, end: r.end, timed: true}) {
+			rep = seg{"⏰", stWarn}
 		}
 	}
 	// 内容を先に削らせないよう、タグは内容の前に置く

@@ -485,5 +485,5 @@ func clashMsg(o occ) error {
 	if !o.end.IsZero() {
 		t += "-" + o.end.Format("15:04")
 	}
-	return fmt.Errorf("重なる: %d/%d %s %s", o.at.Month(), o.at.Day(), t, o.e.textOn(day(o.at)))
+	return fmt.Errorf("重なる: %d/%d %s %s", o.at.Month(), o.at.Day(), t, short(o.e.textOn(day(o.at)), 40))
 }
