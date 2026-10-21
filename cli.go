@@ -34,7 +34,7 @@ func setNow(s string) error {
 var dayWords = map[int]string{-1: "昨日", 0: "今日", 1: "明日", 2: "明後日"}
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
-// list は直近を出す。overdueOnly なら期限切れ(⏰)だけを出し、その件数を返す。
+// list は直近を出す。overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
 func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bool) int {
 	width := 0 // 0 = 切らない(パイプのときは全文を出す)
 	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {

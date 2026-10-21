@@ -19,7 +19,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 
   nichiji [ファイル|ディレクトリ ...]          TUI。最初のファイルが書込先(Tab で切替)
   nichiji ls [-days 14] [-past 0] [-u] [ファイル ...]   直近の予定を表示して終わる
-  nichiji ls -overdue [ファイル ...]             期限切れ(⏰)だけ。あれば終了コード 1
+  nichiji ls -overdue [ファイル ...]             期限切れ(LATE)だけ。あれば終了コード 1
   nichiji add [-f ファイル] [-d 日時] 内容        1行追記。-d 無しは未定メモ
   nichiji set -f ファイル (-match 語 | -at 日時) [-status 完了] [-end now|+30|15:20] [-d 日時] [-note 結果] [-text 内容] [-force]
                                                1件を書き換える(重なると拒否)
@@ -32,7 +32,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
           d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
 1ファイル = 1人(1台): 同じファイルで時刻が重なる予定は入れられない(別ファイルは可)
-内容の先頭の [予約] [実行中] は「まだ終わっていない」印。終わりの時刻を過ぎると ⏰ が付く
+内容の先頭の [予約] [実行中] は「まだ終わっていない」印。終わりの時刻を過ぎると LATE が付く
 CSV の空行と # で始まる行は無視し、保存してもそのまま残る
 既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
 `
@@ -63,7 +63,7 @@ func main() {
 	fs.StringVar(&so.text, "text", "", "set: 内容を丸ごと置き換える")
 	fs.BoolVar(&so.force, "force", false, "set: 重なっても書く")
 	full := fs.Bool("full", false, "ls: 端末の幅で切らない")
-	od := fs.Bool("overdue", false, "ls: 期限切れ(⏰)だけ。あれば終了コード 1")
+	od := fs.Bool("overdue", false, "ls: 期限切れ(LATE)だけ。あれば終了コード 1")
 	fs.Parse(args)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -790,11 +790,8 @@ func (m *model) entrySegs(indent string, r row) []seg {
 	// 内容を先に削らせないよう、タグは内容の前に置く
 	segs := []seg{{indent, stPlain}, when, rep, m.tag(e), {" " + strings.ReplaceAll(e.textOn(r.date), "\n", "⏎"), stPlain}}
 	if r.timed && overdue(occ{e: e, at: r.at, end: r.end, timed: true}) {
-		// 終わりを過ぎてもまだ閉じていない: 印を付けて行ごと赤く
-		segs[2] = seg{"⏰", stWarn}
-		for i := range segs {
-			segs[i].st = stWarn
-		}
+		// 終わりを過ぎてもまだ閉じていない。grep しやすいよう英字で
+		segs[2] = seg{strings.TrimSpace(rep.s) + " LATE", stHead}
 	}
 	return segs
 }
