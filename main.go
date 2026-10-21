@@ -20,6 +20,8 @@ const usage = `nichiji — CSV(日時,内容)の予定表
   nichiji [ファイル|ディレクトリ ...]          TUI。最初のファイルが書込先(Tab で切替)
   nichiji ls [-days 14] [-past 0] [-u] [ファイル ...]   直近の予定を表示して終わる
   nichiji add [-f ファイル] [-d 日時] 内容        1行追記。-d 無しは未定メモ
+  nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] ファイル ...
+                                               全員が空いている枠を探す
   共通: -now "2026-12-24 10:00"   今日を差し替える(確認用)
 
 日時: 2026-10-25 14:00 / 14:00-15:30(終わりつき) / 10/25 / 14:00 / +3 / +3 9:00 / 空=未定
@@ -33,7 +35,7 @@ CSV の空行と # で始まる行は無視し、保存してもそのまま残�
 func main() {
 	sub := ""
 	args := os.Args[1:]
-	if len(args) > 0 && (args[0] == "add" || args[0] == "ls") {
+	if len(args) > 0 && (args[0] == "add" || args[0] == "ls" || args[0] == "free") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
@@ -44,6 +46,9 @@ func main() {
 	days := fs.Int("days", 14, "ls で何日先まで")
 	past := fs.Int("past", 0, "ls で何日前から")
 	undef := fs.Bool("u", false, "ls で未定も並べる")
+	length := fs.Int("len", 60, "free で必要な長さ(分)")
+	fromS := fs.String("from", "9:00", "free で1日の探し始め")
+	toS := fs.String("to", "18:00", "free で1日の探し終わり")
 	fs.Parse(args)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -91,6 +96,15 @@ func main() {
 		list(os.Stdout, files, *past, *days, *undef)
 		return
 	}
+	if sub == "free" {
+		from, err1 := hhmm(*fromS)
+		to, err2 := hhmm(*toS)
+		if err1 != nil || err2 != nil || from >= to {
+			die(fmt.Errorf("-from / -to は 9:00 のように、from < to で"))
+		}
+		freeList(os.Stdout, files, *days, from, to, *length)
+		return
+	}
 	m := newModel()
 	m.files = files
 	m.resetSel()
@@ -109,9 +123,10 @@ const (
 	vWeek
 	vYear
 	vInbox
+	vCols
 )
 
-var viewNames = []string{"日", "週", "年", "未定"}
+var viewNames = []string{"日", "週", "年", "未定", "列"}
 
 const (
 	inNone = iota
@@ -231,38 +246,29 @@ func (m *model) rows() []row {
 				rs = append(rs, occRow(o, d))
 			}
 		}
-		// 前日から日付をまたいで続く予定も入れる
-		spans := os
-		for _, o := range m.occsOn(d.AddDate(0, 0, -1)) {
-			if o.end.After(d) {
-				spans = append(spans, o)
-			}
-		}
+		_, spans := spansOn(m.all(), d)
 		for t := 0; t < 1440; t += m.step {
-			n := 0
-			for _, o := range os {
-				if st := mins(o.at, d); o.timed && st >= t && st < t+m.step {
-					r := occRow(o, d)
-					r.slot = t
-					rs = append(rs, r)
-					n++
-				}
+			starts, ong := slotOccs(os, spans, d, t, m.step)
+			for _, o := range starts {
+				r := occRow(o, d)
+				r.slot = t
+				rs = append(rs, r)
 			}
-			if n > 0 {
+			if len(starts) > 0 {
 				continue
 			}
 			r := row{date: d, slot: t}
-			for _, o := range spans {
-				if o.timed && !o.end.IsZero() && mins(o.at, d) < t && mins(o.end, d) > t {
-					if r.e == nil {
-						r = occRow(o, d)
-						r.slot, r.cont = t, true
-					} else {
-						r.more++
-					}
-				}
+			if len(ong) > 0 {
+				r = occRow(ong[0], d)
+				r.slot, r.cont, r.more = t, true, len(ong)-1
 			}
 			rs = append(rs, r)
+		}
+	case vCols:
+		d := day(m.cur)
+		rs = append(rs, row{date: d, slot: -1})
+		for t := 0; t < 1440; t += m.step {
+			rs = append(rs, row{date: d, slot: t})
 		}
 	case vWeek:
 		s := weekStart(m.cur)
@@ -288,6 +294,10 @@ func (m *model) curRow() (row, bool) {
 	if m.sel < 0 || m.sel >= len(rs) {
 		return row{date: day(m.cur), slot: -1}, false
 	}
+	if m.view == vCols {
+		r := rs[m.sel]
+		return m.cell(m.files[m.target], r.date, r.slot), true
+	}
 	return rs[m.sel], true
 }
 
@@ -297,12 +307,12 @@ func (m *model) resetSel() {
 	m.sel, m.off = 0, 0
 	now := now()
 	switch m.view {
-	case vDay:
+	case vDay, vCols:
 		want := 9 * 60
 		if day(m.cur).Equal(day(now)) {
 			want = mins(now, day(now)) / m.step * m.step
 		}
-		if !day(m.cur).Equal(day(now)) {
+		if !day(m.cur).Equal(day(now)) && m.view == vDay {
 			for i, r := range rs {
 				if r.e != nil {
 					m.sel = i
@@ -328,6 +338,23 @@ func (m *model) resetSel() {
 
 // focus は e の行を選ぶ。今の表示に無い日付なら、その日へ移る。
 func (m *model) focus(e *Entry) {
+	if m.view == vCols {
+		for i, f := range m.files {
+			if f == e.file {
+				m.target = i
+			}
+		}
+		if e.Kind == kDate || e.Kind == kTime {
+			m.cur = day(e.At)
+			for i, r := range m.rows() {
+				if (e.Kind == kDate && r.slot < 0) || (e.Kind == kTime && r.slot >= 0 && mins(e.At, m.cur) >= r.slot && mins(e.At, m.cur) < r.slot+m.step) {
+					m.sel = i
+					break
+				}
+			}
+		}
+		return
+	}
 	for pass := 0; pass < 2; pass++ {
 		for i, r := range m.rows() {
 			if r.e == e {
@@ -515,7 +542,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = !m.help
 	case "z":
-		if m.view == vDay {
+		if m.view == vDay || m.view == vCols {
 			at := r.slot
 			m.step = map[int]int{60: 30, 30: 15, 15: 60}[m.step]
 			m.resetSel()
@@ -539,6 +566,9 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = vYear
 	case "u":
 		m.view = vInbox
+		m.resetSel()
+	case "c":
+		m.view = vCols
 		m.resetSel()
 	case "t":
 		m.cur = day(now())
@@ -616,14 +646,14 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "h", "left":
 		switch m.view {
-		case vDay, vYear:
+		case vDay, vYear, vCols:
 			m.move(-1)
 		case vWeek:
 			m.move(-7)
 		}
 	case "l", "right":
 		switch m.view {
-		case vDay, vYear:
+		case vDay, vYear, vCols:
 			m.move(1)
 		case vWeek:
 			m.move(7)
@@ -763,7 +793,7 @@ func (m *model) View() string {
 	var body []string
 	d := day(m.cur)
 	switch m.view {
-	case vDay:
+	case vDay, vCols:
 		title = fmt.Sprintf("%d年 %s", d.Year(), dateLabel(d))
 		if m.step != 60 {
 			title += fmt.Sprintf("  %d分刻み", m.step)
@@ -790,6 +820,8 @@ func (m *model) View() string {
 
 	if m.view == vYear {
 		body = m.yearBody(bodyH)
+	} else if m.view == vCols {
+		body = m.colsBody(bodyH)
 	} else {
 		rs := m.rows()
 		if len(rs) == 0 {
@@ -830,7 +862,7 @@ func (m *model) footer() string {
 		return line([]seg{{m.msg, stWarn}}, m.w, false)
 	}
 	if m.help {
-		return line([]seg{{"a:メモ A:ここに追加 e:内容 s/Enter:日時 x:削除 E:エディタ z:刻み d/w/y/u:日週年未定 h/l:前後 H/L:月(年) t:今日 Tab:書込先 r:再読込 q:終了", stDim}}, m.w, false)
+		return line([]seg{{"a:メモ A:ここに追加 e:内容 s/Enter:日時 x:削除 E:エディタ z:刻み d/w/y/u/c:日週年未定列 h/l:前後 H/L:月(年) t:今日 Tab:書込先(列では人を移る) r:再読込 q:終了", stDim}}, m.w, false)
 	}
 	return line([]seg{{"書込: " + m.files[m.target].Name(), stDim}, {"  ?:ヘルプ", stDim}}, m.w, false)
 }

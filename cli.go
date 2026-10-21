@@ -84,3 +84,44 @@ func render(segs []seg) string {
 	}
 	return s
 }
+
+func hhmm(s string) (int, error) {
+	var h, m int
+	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil || h > 24 || m > 59 {
+		return 0, fmt.Errorf("時刻が変: %q", s)
+	}
+	return h*60 + m, nil
+}
+
+// freeList は読み込んだ全ファイル(全員)が空いている枠を日ごとに並べる。
+func freeList(w io.Writer, files []*File, days, from, to, length int) {
+	today := day(now())
+	n := 0
+	for i := 0; i <= days; i++ {
+		d := today.AddDate(0, 0, i)
+		fs := freeSlots(files, d, from, to, length)
+		if len(fs) == 0 {
+			continue
+		}
+		head := dateLabel(d)
+		if wd, ok := dayWords[i]; ok {
+			head += " " + wd
+		}
+		fmt.Fprintln(w, stHead.Render(head))
+		for _, f := range fs {
+			fmt.Fprintf(w, "  %s-%s %s\n", f[0].Format("15:04"), endLabel(f[0], f[1]), stDim.Render("("+durLabel(f[1].Sub(f[0]))+")"))
+			n++
+		}
+	}
+	if n == 0 {
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d日先まで %d分の空きなし", days, length)))
+	}
+}
+
+// endLabel は 24:00 を 00:00 と書かないため。
+func endLabel(s, e time.Time) string {
+	if !day(e).Equal(day(s)) && e.Equal(day(e)) {
+		return "24:00"
+	}
+	return e.Format("15:04")
+}
