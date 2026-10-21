@@ -131,6 +131,9 @@ func (m *model) colsBody(bodyH int) []string {
 						txt, st = "!"+txt, stWarn
 					}
 				}
+				if c.timed && overdue(occ{e: c.e, at: c.at, end: c.end, timed: true}) {
+					txt, st = "⏰"+strings.TrimPrefix(txt, "│"), stWarn
+				}
 				if c.more > 0 {
 					txt += fmt.Sprintf("+%d", c.more)
 				}

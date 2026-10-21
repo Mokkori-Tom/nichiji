@@ -34,7 +34,8 @@ func setNow(s string) error {
 var dayWords = map[int]string{-1: "昨日", 0: "今日", 1: "明日", 2: "明後日"}
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
-func list(w io.Writer, files []*File, past, days int, undef, cut bool) {
+// list は直近を出す。overdueOnly なら期限切れ(⏰)だけを出し、その件数を返す。
+func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bool) int {
 	width := 0 // 0 = 切らない(パイプのときは全文を出す)
 	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {
 		if cw, _, err := term.GetSize(fd); err == nil {
@@ -53,6 +54,15 @@ func list(w io.Writer, files []*File, past, days int, undef, cut bool) {
 	for i := -past; i <= days; i++ {
 		d := today.AddDate(0, 0, i)
 		os := m.occsOn(d)
+		if overdueOnly {
+			var od []occ
+			for _, o := range os {
+				if overdue(o) {
+					od = append(od, o)
+				}
+			}
+			os = od
+		}
 		if len(os) == 0 {
 			continue
 		}
@@ -70,6 +80,9 @@ func list(w io.Writer, files []*File, past, days int, undef, cut bool) {
 			n++
 		}
 	}
+	if overdueOnly {
+		return n
+	}
 	if n == 0 {
 		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d日先まで予定なし", days)))
 	}
@@ -80,16 +93,17 @@ func list(w io.Writer, files []*File, past, days int, undef, cut bool) {
 		}
 	}
 	if len(us) == 0 {
-		return
+		return n
 	}
 	if !undef {
 		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("未定 %d件(-u で表示)", len(us))))
-		return
+		return n
 	}
 	fmt.Fprintln(w, stHead.Render("未定"))
 	for _, e := range us {
 		fmt.Fprintln(w, render(m.entrySegs("  ", row{e: e, date: today, slot: -1})))
 	}
+	return n
 }
 
 func render(segs []seg) string {

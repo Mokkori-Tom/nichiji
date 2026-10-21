@@ -19,6 +19,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 
   nichiji [ファイル|ディレクトリ ...]          TUI。最初のファイルが書込先(Tab で切替)
   nichiji ls [-days 14] [-past 0] [-u] [ファイル ...]   直近の予定を表示して終わる
+  nichiji ls -overdue [ファイル ...]             期限切れ(⏰)だけ。あれば終了コード 1
   nichiji add [-f ファイル] [-d 日時] 内容        1行追記。-d 無しは未定メモ
   nichiji set -f ファイル (-match 語 | -at 日時) [-status 完了] [-end now|+30|15:20] [-d 日時] [-note 結果] [-text 内容] [-force]
                                                1件を書き換える(重なると拒否)
@@ -62,6 +63,7 @@ func main() {
 	fs.StringVar(&so.text, "text", "", "set: 内容を丸ごと置き換える")
 	fs.BoolVar(&so.force, "force", false, "set: 重なっても書く")
 	full := fs.Bool("full", false, "ls: 端末の幅で切らない")
+	od := fs.Bool("overdue", false, "ls: 期限切れ(⏰)だけ。あれば終了コード 1")
 	fs.Parse(args)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -120,7 +122,18 @@ func main() {
 		files = append(files, f)
 	}
 	if sub == "ls" {
-		list(os.Stdout, files, *past, *days, *undef, !*full)
+		if *od {
+			// 期限切れは過去にあるので、-past を指定しなければ30日前から見る
+			p := *past
+			if p == 0 {
+				p = 30
+			}
+			if list(os.Stdout, files, p, 0, false, !*full, true) > 0 {
+				os.Exit(1)
+			}
+			return
+		}
+		list(os.Stdout, files, *past, *days, *undef, !*full, false)
 		return
 	}
 	if sub == "free" {
@@ -773,12 +786,17 @@ func (m *model) entrySegs(indent string, r row) []seg {
 		if _, bad := e.clashOn(e.file, day(r.at)); bad {
 			rep = seg{"!", stWarn}
 		}
-		if overdue(occ{e: e, at: r.at, end: r.end, timed: true}) {
-			rep = seg{"⏰", stWarn}
-		}
 	}
 	// 内容を先に削らせないよう、タグは内容の前に置く
-	return []seg{{indent, stPlain}, when, rep, m.tag(e), {" " + strings.ReplaceAll(e.textOn(r.date), "\n", "⏎"), stPlain}}
+	segs := []seg{{indent, stPlain}, when, rep, m.tag(e), {" " + strings.ReplaceAll(e.textOn(r.date), "\n", "⏎"), stPlain}}
+	if r.timed && overdue(occ{e: e, at: r.at, end: r.end, timed: true}) {
+		// 終わりを過ぎてもまだ閉じていない: 印を付けて行ごと赤く
+		segs[2] = seg{"⏰", stWarn}
+		for i := range segs {
+			segs[i].st = stWarn
+		}
+	}
+	return segs
 }
 
 func dateLabel(d time.Time) string {
