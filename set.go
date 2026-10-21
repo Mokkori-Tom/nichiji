@@ -10,7 +10,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// 内容の先頭の [状態]。[予約] [実行中] は「まだ閉じていない」扱いで、終わりを過ぎると ⏰ が付く。
+// 内容の先頭の [状態]。[予約] [実行中] は「まだ閉じていない」扱いで、終わりを過ぎると 過 が付く。
 var reStatus = regexp.MustCompile(`^\[([^\]]*)\]\s*`)
 
 func status(text string) string {

@@ -31,7 +31,7 @@ const usage = `nichiji — CSV(日時,内容)の予定表
 繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
           d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
 1ファイル = 1人(1台): 同じファイルで時刻が重なる予定は入れられない(別ファイルは可)
-内容の先頭の [予約] [実行中] は「まだ終わっていない」印。終わりの時刻を過ぎると ⏰ が付く
+内容の先頭の [予約] [実行中] は「まだ終わっていない」印。終わりの時刻を過ぎると 過 が付く
 CSV の空行と # で始まる行は無視し、保存してもそのまま残る
 既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
 `
@@ -774,7 +774,7 @@ func (m *model) entrySegs(indent string, r row) []seg {
 			rep = seg{"!", stWarn}
 		}
 		if overdue(occ{e: e, at: r.at, end: r.end, timed: true}) {
-			rep = seg{"⏰", stWarn}
+			rep = seg{"過", stWarn}
 		}
 	}
 	// 内容を先に削らせないよう、タグは内容の前に置く
