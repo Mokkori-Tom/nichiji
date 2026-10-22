@@ -27,7 +27,7 @@ func setNow(s string) error {
 	case kDate:
 		nowShift = t.Sub(day(time.Now()))
 	default:
-		return fmt.Errorf("-now は日付か日時で: %q", s)
+		return fmt.Errorf("-now needs a date or date/time: %q", s)
 	}
 	return nil
 }
@@ -35,7 +35,7 @@ func setNow(s string) error {
 // listSegs は ls の1件。印(! / LATE)は grep できるよう英字のまま本文の前に置く。
 func (m *model) listSegs(o occ) []seg {
 	e := o.e
-	when := "未定"
+	when := "undated"
 	switch {
 	case e.Kind == kUndef && e.Raw != "":
 		when = "?" + e.Raw
@@ -44,7 +44,7 @@ func (m *model) listSegs(o occ) []seg {
 	case o.timed:
 		when = o.at.Format("15:04")
 	case e.Kind != kUndef:
-		when = "終日"
+		when = "all-day"
 	}
 	segs := []seg{{"  " + when + " ", stPlain}}
 	if len(m.files) > 1 {
@@ -113,7 +113,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 		return n
 	}
 	if n == 0 {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d日先まで予定なし", days)))
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("nothing in the next %d days", days)))
 	}
 	var us []*Entry
 	for _, e := range m.all() {
@@ -125,10 +125,10 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 		return n
 	}
 	if !undef {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("未定 %d件(-u で表示)", len(us))))
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d undated (-u to list)", len(us))))
 		return n
 	}
-	fmt.Fprintln(w, stHead.Render("未定"))
+	fmt.Fprintln(w, stHead.Render("undated"))
 	for _, e := range us {
 		fmt.Fprintln(w, render(m.listSegs(occ{e: e})))
 	}
@@ -146,7 +146,7 @@ func render(segs []seg) string {
 func hhmm(s string) (int, error) {
 	var h, m int
 	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil || h > 24 || m > 59 {
-		return 0, fmt.Errorf("時刻が変: %q", s)
+		return 0, fmt.Errorf("bad time: %q", s)
 	}
 	return h*60 + m, nil
 }
@@ -169,7 +169,7 @@ func freeList(w io.Writer, files []*File, days, from, to, length int) {
 		}
 	}
 	if n == 0 {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d日先まで %d分の空きなし", days, length)))
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("no %[2]d-minute gap in the next %[1]d days", days, length)))
 	}
 }
 

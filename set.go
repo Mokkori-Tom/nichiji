@@ -22,7 +22,7 @@ func status(text string) string {
 
 func isOpen(text string) bool {
 	s := status(text)
-	return s == "予約" || s == "実行中"
+	return s == "reserved" || s == "running" || s == "予約" || s == "実行中"
 }
 
 // overdue は、閉じていない予定が終わりの時刻を過ぎているか。
@@ -50,7 +50,7 @@ type setOpts struct {
 // findEntry は -match(内容の部分一致)と -at(開始の日時)で1件に絞る。
 func findEntry(f *File, match, at string) (*Entry, error) {
 	if match == "" && at == "" {
-		return nil, fmt.Errorf("-match か -at で予定を指定して")
+		return nil, fmt.Errorf("pick an entry with -match or -at")
 	}
 	atRaw := ""
 	if at != "" {
@@ -75,12 +75,12 @@ func findEntry(f *File, match, at string) (*Entry, error) {
 	}
 	switch len(hit) {
 	case 0:
-		return nil, fmt.Errorf("見つからない")
+		return nil, fmt.Errorf("no matching entry")
 	case 1:
 		return hit[0], nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d件あるので絞り込んで(-at か -match を足す):", len(hit))
+	fmt.Fprintf(&b, "%d entries match; narrow it down with -at or -match:", len(hit))
 	for _, e := range hit {
 		fmt.Fprintf(&b, "\n  %s  %s", e.Raw, short(e.Text, 50))
 	}
@@ -90,7 +90,7 @@ func findEntry(f *File, match, at string) (*Entry, error) {
 // newEnd は -end の値を解く。now / +分 / HH:MM。
 func newEnd(e *Entry, v string) (string, error) {
 	if e.Kind != kTime {
-		return "", fmt.Errorf("-end は日時つきの予定だけ(繰り返しは -d で書き換える)")
+		return "", fmt.Errorf("-end needs a dated entry with a time (rewrite repeats with -d)")
 	}
 	var end time.Time
 	switch {
@@ -99,7 +99,7 @@ func newEnd(e *Entry, v string) (string, error) {
 	case strings.HasPrefix(v, "+"):
 		n, err := strconv.Atoi(v[1:])
 		if err != nil {
-			return "", fmt.Errorf("-end +分: %q", v)
+			return "", fmt.Errorf("-end +minutes: %q", v)
 		}
 		base := e.End
 		if base.IsZero() {
@@ -114,10 +114,10 @@ func newEnd(e *Entry, v string) (string, error) {
 		end = endAt(e.At, m)
 	}
 	if !end.After(e.At) {
-		return "", fmt.Errorf("終わりが始まりより前")
+		return "", fmt.Errorf("end is not after start")
 	}
 	if end.Sub(e.At) >= 24*time.Hour {
-		return "", fmt.Errorf("24時間以上は書けない")
+		return "", fmt.Errorf("cannot span 24 hours or more")
 	}
 	m := mins(end, day(end))
 	return formatWhen(e.At, kTime) + fmt.Sprintf("-%02d:%02d", m/60, m%60), nil
@@ -142,6 +142,7 @@ func setEntry(path string, o setOpts) (string, error) {
 		if raw, err = parseInput(o.when, base); err != nil {
 			return "", err
 		}
+		raw = keepLength(e, raw)
 	}
 	text := e.Text
 	if o.text != "" {
@@ -166,7 +167,7 @@ func setEntry(path string, o setOpts) (string, error) {
 		e.Memo = o.memo
 	}
 	if c, bad := e.clash(f); bad && !o.force {
-		return "", fmt.Errorf("%v(それでも書くなら -force)", clashMsg(c))
+		return "", fmt.Errorf("%v (use -force to write anyway)", clashMsg(c))
 	}
 	if err := save(f); err != nil {
 		return "", err

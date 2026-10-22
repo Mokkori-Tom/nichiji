@@ -64,9 +64,9 @@ func durLabel(d time.Duration) string {
 	h, mm := int(d.Hours()), int(d.Minutes())%60
 	switch {
 	case h == 0:
-		return fmt.Sprintf("%d分", mm)
+		return fmt.Sprintf("%dm", mm)
 	case mm == 0:
-		return fmt.Sprintf("%d時間", h)
+		return fmt.Sprintf("%dh", h)
 	}
-	return fmt.Sprintf("%d時間%d分", h, mm)
+	return fmt.Sprintf("%dh%02dm", h, mm)
 }

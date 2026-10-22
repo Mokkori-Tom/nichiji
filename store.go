@@ -219,12 +219,12 @@ func parseInput(s string, base time.Time) (string, error) {
 	if _, _, _, _, err := parseRule(s); err == nil {
 		return s, nil
 	} else if strings.ContainsAny(s, "=<>") {
-		return "", fmt.Errorf("繰り返しが読めない: %v", err)
+		return "", fmt.Errorf("cannot read repeat rule: %v", err)
 	}
 	if c, ok := canon(fmt.Sprintf("%d-%s", base.Year(), s)); ok {
 		return c, nil
 	}
-	return "", fmt.Errorf("日時が読めない: %q", s)
+	return "", fmt.Errorf("cannot read date/time: %q", s)
 }
 
 func (e *Entry) setRaw(raw string) {
@@ -268,7 +268,7 @@ func load(path string) (*File, error) {
 	for i := 0; i < len(lines); i++ {
 		ln := strings.TrimSuffix(lines[i], "\r")
 		t := strings.TrimSpace(ln)
-		if t == "" || strings.HasPrefix(t, "#") || (i == 0 && strings.HasPrefix(t, "日時,")) {
+		if t == "" || strings.HasPrefix(t, "#") || (i == 0 && (strings.HasPrefix(t, "日時,") || strings.HasPrefix(strings.ToLower(t), "datetime,"))) {
 			f.Items = append(f.Items, item{raw: ln})
 			continue
 		}
@@ -314,13 +314,13 @@ func csvRead(s string, lazy bool) ([]string, error) {
 	rec, err := r.Read()
 	if err == nil {
 		if _, err2 := r.Read(); err2 != io.EOF {
-			err = fmt.Errorf("1行に収まらない")
+			err = fmt.Errorf("record spans lines")
 		}
 	}
 	return rec, err
 }
 
-var errChanged = errors.New("外部で変更されている")
+var errChanged = errors.New("changed on disk")
 
 // save は一時ファイルに書いて rename する。読み込み後に他から書き換えられていたら書かない。
 func save(f *File) error {
@@ -493,5 +493,20 @@ func clashMsg(o occ) error {
 	if !o.end.IsZero() {
 		t += "-" + o.end.Format("15:04")
 	}
-	return fmt.Errorf("重なる: %d/%d %s %s", o.at.Month(), o.at.Day(), t, short(o.e.textOn(day(o.at)), 40))
+	return fmt.Errorf("overlaps: %d/%d %s %s", o.at.Month(), o.at.Day(), t, short(o.e.textOn(day(o.at)), 40))
+}
+
+// keepLength は、時刻だけ打ち直したとき(終わり無し)に元の長さを引き継ぐ。
+func keepLength(old *Entry, raw string) string {
+	if old.Kind != kTime || old.End.IsZero() {
+		return raw
+	}
+	st, em := splitEnd(norm(raw))
+	t, k := parseWhen(st)
+	if k != kTime || em >= 0 {
+		return raw
+	}
+	end := t.Add(old.End.Sub(old.At))
+	m := mins(end, day(end))
+	return raw + fmt.Sprintf("-%02d:%02d", m/60, m%60)
 }

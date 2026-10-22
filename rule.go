@@ -36,14 +36,14 @@ func parseRule(s string) (r rule, min, emin, base int, err error) {
 		h, _ := strconv.Atoi(m[2])
 		mm, _ := strconv.Atoi(m[3])
 		if h > 23 || mm > 59 {
-			return nil, 0, 0, 0, fmt.Errorf("時刻が変: %s", s)
+			return nil, 0, 0, 0, fmt.Errorf("bad time: %s", s)
 		}
 		s, min = m[1], h*60+mm
 		if m[4] != "" {
 			h, _ = strconv.Atoi(m[4])
 			mm, _ = strconv.Atoi(m[5])
 			if h > 24 || mm > 59 {
-				return nil, 0, 0, 0, fmt.Errorf("終わりの時刻が変: %s", s)
+				return nil, 0, 0, 0, fmt.Errorf("bad end time: %s", s)
 			}
 			emin = h*60 + mm
 		}
@@ -52,18 +52,18 @@ func parseRule(s string) (r rule, min, emin, base int, err error) {
 		mo, _ := strconv.Atoi(m[2])
 		d, _ := strconv.Atoi(m[3])
 		if mo < 1 || mo > 12 || d < 1 || d > 31 {
-			return nil, 0, 0, 0, fmt.Errorf("日付が変: %s", s)
+			return nil, 0, 0, 0, fmt.Errorf("bad date: %s", s)
 		}
 		base, _ = strconv.Atoi(m[1])
 		return func(t time.Time) bool { return int(t.Month()) == mo && t.Day() == d }, min, emin, base, nil
 	}
 	if !strings.ContainsAny(s, "=<>") {
-		return nil, 0, 0, 0, fmt.Errorf("繰り返しではない")
+		return nil, 0, 0, 0, fmt.Errorf("not a repeat rule")
 	}
 	p := &parser{toks: tokenize(s)}
 	r, err = p.or()
 	if err == nil && p.i < len(p.toks) {
-		err = fmt.Errorf("余計な %q", p.toks[p.i])
+		err = fmt.Errorf("unexpected %q", p.toks[p.i])
 	}
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -161,7 +161,7 @@ func (p *parser) unary() (rule, error) {
 			return nil, err
 		}
 		if p.next() != ")" {
-			return nil, fmt.Errorf(") が足りない")
+			return nil, fmt.Errorf("missing )")
 		}
 		return r, nil
 	}
@@ -177,7 +177,7 @@ func (p *parser) cmp() (rule, error) {
 	v := p.next()
 	get, ok := vars[v]
 	if !ok {
-		return nil, fmt.Errorf("変数が変: %q(w m d y a b n)", v)
+		return nil, fmt.Errorf("unknown variable %q (w m d y a b n)", v)
 	}
 	op := p.next()
 	val := p.next()
@@ -193,7 +193,7 @@ func (p *parser) cmp() (rule, error) {
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("値が変: %q", val)
+		return nil, fmt.Errorf("bad value %q", val)
 	}
 	var f func(a int) bool
 	switch op {
@@ -210,7 +210,7 @@ func (p *parser) cmp() (rule, error) {
 	case ">=":
 		f = func(a int) bool { return a >= n }
 	default:
-		return nil, fmt.Errorf("演算子が変: %q", op)
+		return nil, fmt.Errorf("bad operator %q", op)
 	}
 	return func(t time.Time) bool { return f(get(t)) }, nil
 }

@@ -25,7 +25,7 @@ const (
 	lvYear
 )
 
-var lvNames = []string{"時", "日", "月", "年"}
+var lvNames = []string{"hour", "day", "month", "year"}
 
 const (
 	slotAll   = -1 // 終日
@@ -73,6 +73,9 @@ type model struct {
 	help     bool
 	gPending bool
 	search   string
+	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
+	pickList []occ
+	pickSel  int
 }
 
 var (
@@ -149,7 +152,7 @@ func occsOn(es []*Entry, d time.Time) []occ {
 
 func isDone(e *Entry) bool {
 	s := status(e.Text)
-	return s == "完了" || s == "中止"
+	return s == "done" || s == "canceled" || s == "完了" || s == "中止"
 }
 
 func (m *model) visible(e *Entry) bool { return !m.hideDone || !isDone(e) }
@@ -312,20 +315,53 @@ func (m *model) curRow() (trow, bool) {
 	return m.rows[m.sel], true
 }
 
-// curEntry は選んでいるマスの予定(1件だけのとき)。
+// openPick は選んでいるマスを開く。中の予定を1件ずつ選べるようにする。
+func (m *model) openPick() {
+	r, ok := m.curRow()
+	if !ok || len(r.cells[m.target].os) == 0 {
+		m.msg = "this cell is empty"
+		return
+	}
+	m.pick, m.pickList, m.pickSel = true, r.cells[m.target].os, 0
+}
+
+// refreshPick は書き換えのあとに、開いているマスの中身を取り直す。
+func (m *model) refreshPick(e *Entry) {
+	if !m.pick {
+		return
+	}
+	r, ok := m.curRow()
+	if !ok || len(r.cells[m.target].os) == 0 {
+		m.pick = false
+		return
+	}
+	m.pickList = r.cells[m.target].os
+	m.pickSel = min(m.pickSel, len(m.pickList)-1)
+	for i, o := range m.pickList {
+		if o.e == e {
+			m.pickSel = i
+		}
+	}
+}
+
+// curEntry は選んでいるマスの予定(1件だけのとき。開いていれば選んだ1件)。
 func (m *model) curEntry() (*Entry, string) {
+	if m.pick {
+		if m.pickSel < len(m.pickList) {
+			return m.pickList[m.pickSel].e, ""
+		}
+		return nil, "no entry here"
+	}
 	r, ok := m.curRow()
 	if !ok || m.target >= len(r.cells) {
-		return nil, "予定が無い"
+		return nil, "no entry here"
 	}
 	c := r.cells[m.target]
 	switch {
 	case len(c.os) == 0:
-		return nil, "このマスは空"
-	case c.ctx:
-		return nil, "この値は日付の行で選んで"
+		return nil, "this cell is empty"
 	case len(c.os) > 1:
-		return nil, "このマスは複数あるので「時」の目盛りで選んで"
+		return nil, "several entries here: Enter to open the cell"
 	}
 	return c.os[0].e, ""
 }
@@ -473,9 +509,9 @@ func (m *model) commit(f *File) {
 			}
 		}
 		if err == errChanged {
-			m.msg = f.Name() + " が外部で変更されていたので読み直した。もう一度どうぞ"
+			m.msg = f.Name() + " changed on disk; reloaded, try again"
 		} else {
-			m.msg = "保存失敗: " + err.Error()
+			m.msg = "save failed: " + err.Error()
 		}
 	}
 	m.build()
@@ -498,8 +534,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick()
 	case editedMsg:
 		m.reload()
+		m.refreshPick(nil)
 		if msg.err != nil {
-			m.msg = "エディタ: " + msg.err.Error()
+			m.msg = "editor: " + msg.err.Error()
 		}
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -520,6 +557,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			f := m.inE.file
 			f.remove(m.inE)
 			m.commit(f)
+			m.refreshPick(nil)
 		}
 		m.inMode = inNone
 		return m, nil
@@ -555,7 +593,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commit(f)
 			m.focus(e)
 			if e.Kind == kUndef {
-				m.msg = "未定に追加: " + val
+				m.msg = "added as undated: " + val
 			}
 		case inText:
 			if val == "" {
@@ -564,10 +602,12 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inE.Text, m.inE.src = val, ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
+			m.refreshPick(m.inE)
 		case inMemo:
 			m.inE.Memo, m.inE.src = val, ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
+			m.refreshPick(m.inE)
 		case inWhen:
 			base := m.anchor
 			if m.inE.Kind == kDate || m.inE.Kind == kTime {
@@ -579,6 +619,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			oldRaw, oldSrc := m.inE.Raw, m.inE.src
+			raw = keepLength(m.inE, raw)
 			m.inE.setRaw(raw)
 			if o, bad := m.inE.clash(m.inE.file); bad {
 				m.inE.setRaw(oldRaw)
@@ -588,6 +629,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.commit(m.inE.file)
 			m.focus(m.inE)
+			m.refreshPick(m.inE)
 		case inSearch:
 			m.search = val
 			m.findNext(1)
@@ -623,7 +665,7 @@ func (m *model) findNext(dir int) {
 			return
 		}
 	}
-	m.msg = "見つからない: " + m.search
+	m.msg = "not found: " + m.search
 }
 
 func (m *model) bodyH() int {
@@ -641,6 +683,28 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.gPending = false
 		if key == "g" {
 			m.sel = 0
+			return m, nil
+		}
+	}
+	if m.pick {
+		switch key {
+		case "esc", "q", "enter", "backspace":
+			m.pick = false
+			return m, nil
+		case "j", "down":
+			m.pickSel = min(m.pickSel+1, len(m.pickList)-1)
+			return m, nil
+		case "k", "up":
+			m.pickSel = max(m.pickSel-1, 0)
+			return m, nil
+		case "g":
+			m.pickSel = 0
+			return m, nil
+		case "G":
+			m.pickSel = len(m.pickList) - 1
+			return m, nil
+		case "e", "m", "s", "x", "E", "?", "ctrl+c":
+		default:
 			return m, nil
 		}
 	}
@@ -665,8 +729,10 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.target = (m.target + len(m.files) - 1) % len(m.files)
 	case "l", "right", "tab":
 		m.target = (m.target + 1) % len(m.files)
-	case "+", "=", "enter":
+	case "+", "=":
 		m.setLevel(m.level - 1)
+	case "enter", "o":
+		m.openPick()
 	case "-", "backspace":
 		m.setLevel(m.level + 1)
 	case "t":
@@ -677,13 +743,13 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.build()
 		m.seek(m.rowTime(r))
 		if m.hideDone {
-			m.msg = "完了・中止を隠した"
+			m.msg = "hiding done/canceled"
 		} else {
-			m.msg = "完了・中止も出した"
+			m.msg = "showing done/canceled"
 		}
 	case "r":
 		m.reload()
-		m.msg = "再読込した"
+		m.msg = "reloaded"
 	case "/":
 		m.startInput(inSearch, "/", m.search)
 	case "n":
@@ -691,15 +757,15 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "N":
 		m.findNext(-1)
 	case "a":
-		m.startInput(inQuick, "メモ(日時は後で)> ", "")
+		m.startInput(inQuick, "quick (no date)> ", "")
 	case "A":
 		r, _ := m.curRow()
 		if m.level >= lvMonth {
-			m.msg = "日か時の目盛りで"
+			m.msg = "use the hour or day scale"
 			break
 		}
 		m.inRow = r
-		at := "未定"
+		at := "undated"
 		switch {
 		case r.slot >= 0:
 			at = formatWhen(m.rowTime(r), kTime)
@@ -716,12 +782,12 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inE = e
 		switch key {
 		case "e":
-			m.startInput(inText, "内容> ", e.Text)
+			m.startInput(inText, "text> ", e.Text)
 		case "m":
-			m.startInput(inMemo, "メモ欄> ", e.Memo)
+			m.startInput(inMemo, "memo> ", e.Memo)
 		case "s":
-			m.startInput(inWhen, "日時> ", e.Raw)
-			m.hint = "例 10/25 14:00-15:00・14:00・+3・*/12/25・w=日 10:00・空=未定"
+			m.startInput(inWhen, "when> ", e.Raw)
+			m.hint = "e.g. 10/25 14:00-15:00 | 14:00 | +3 | */12/25 | w=sun 10:00 | empty = undated"
 		case "x":
 			m.inMode = inDelete
 		}
@@ -793,7 +859,7 @@ func (m *model) label(r trow) string {
 	switch {
 	case r.slot == slotUndef:
 		if r.first {
-			return "未定"
+			return "undated"
 		}
 		return ""
 	case m.level == lvMonth:
@@ -866,7 +932,7 @@ func (m *model) cellText(c cell) string {
 	}
 	s := strings.Join(ps, " / ")
 	if m.level >= lvMonth && len(c.os) > 1 {
-		s = fmt.Sprintf("%d件 %s", len(c.os), s)
+		s = fmt.Sprintf("%d: %s", len(c.os), s)
 	}
 	return s
 }
@@ -877,9 +943,9 @@ func (m *model) View() string {
 	cw := max(4, (m.w-lw)/n)
 	bodyH := m.bodyH()
 
-	done := "完了を隠す"
+	done := "done:hidden"
 	if !m.hideDone {
-		done = "完了も出す"
+		done = "done:shown"
 	}
 	var lvs []seg
 	for i, nm := range lvNames {
@@ -909,10 +975,12 @@ func (m *model) View() string {
 	}
 	today := day(now())
 	var body []string
-	if len(m.rows) == 0 {
-		body = []string{stDim.Render(" (予定なし)  a でメモ、A でここに追加")}
+	if m.pick {
+		body = m.pickBody(bodyH)
+	} else if len(m.rows) == 0 {
+		body = []string{stDim.Render(" (nothing)  a quick add, A add here")}
 	}
-	for i := m.off; i < len(m.rows) && i < m.off+bodyH; i++ {
+	for i := m.off; !m.pick && i < len(m.rows) && i < m.off+bodyH; i++ {
 		r := m.rows[i]
 		lst := stDim
 		if r.first {
@@ -945,6 +1013,26 @@ func (m *model) View() string {
 	return title + "\n" + hdr + "\n" + strings.Join(body[:bodyH], "\n") + "\n" + m.footer()
 }
 
+// pickBody は開いたマスの中身を1件1行で並べる。
+func (m *model) pickBody(bodyH int) []string {
+	r, _ := m.curRow()
+	out := []string{line([]seg{{fmt.Sprintf(" %s  %s  (%d)  j/k pick  e m s x E edit  Esc close", m.files[m.target].Name(), strings.TrimSpace(m.label(r)), len(m.pickList)), stHead}}, m.w, false)}
+	h := bodyH - 1
+	off := max(0, m.pickSel-h+1)
+	for i := off; i < len(m.pickList) && i < off+h; i++ {
+		o := m.pickList[i]
+		when := "undated"
+		switch {
+		case o.timed:
+			when = o.at.Format("2006-01-02 15:04")
+		case o.e.Kind != kUndef:
+			when = dateLabel(o.at) + "      "
+		}
+		out = append(out, line([]seg{{" " + when + "  ", stDim}, {m.occText(o, false), stPlain}}, m.w, i == m.pickSel))
+	}
+	return out
+}
+
 func (m *model) status() string {
 	e, _ := m.curEntry()
 	if e == nil {
@@ -956,19 +1044,19 @@ func (m *model) status() string {
 	}
 	s := e.file.Name() + "  " + e.Raw
 	if e.Raw == "" {
-		s += "(未定)"
+		s += "(undated)"
 	}
 	s += "  " + strings.ReplaceAll(e.Text, "\n", "⏎")
 	if e.Memo != "" {
-		s += "  | メモ: " + strings.ReplaceAll(e.Memo, "\n", "⏎")
+		s += "  | memo: " + strings.ReplaceAll(e.Memo, "\n", "⏎")
 	}
 	return s
 }
 
-const hintShort = "j/k 移動 h/l 列 +/- 時日月年 t 今 a メモ A ここに追加 e 内容 m メモ欄 s 日時 x 削除 E エディタ v 完了 / 検索 ? 全部 q 終了"
+const hintShort = "j/k move h/l column +/- scale Enter open t now a quick A add e text m memo s when x del E editor v done / find ? help q quit"
 
-const hintFull = "j/k ↓↑  gg/G 先頭/末尾  C-d/C-u 半画面  h/l(Tab) 列 = 書込先  +/Enter 細かく  -/BS 粗く  t 今へ  " +
-	"a 未定メモ  A 選んだ日時に追加  e 内容  m メモ欄  s 日時  x 削除  E エディタでその行  v 完了・中止の表示  / 検索 n/N  r 再読込  q 終了"
+const hintFull = "j/k down/up  gg/G top/bottom  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
+	"a quick add  A add at row  e text  m memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort
@@ -978,7 +1066,7 @@ func (m *model) footer() string {
 	hints := line([]seg{{hint, stDim}}, m.w, false)
 	switch m.inMode {
 	case inDelete:
-		return stWarn.Render(runewidth.Truncate("削除? (y/N) "+m.inE.Text, m.w, "…")) + "\n" + hints
+		return stWarn.Render(runewidth.Truncate("delete? (y/N) "+m.inE.Text, m.w, "…")) + "\n" + hints
 	case inNone:
 	default:
 		m.in.Width = max(10, m.w-runewidth.StringWidth(m.in.Prompt)-1)
@@ -988,7 +1076,7 @@ func (m *model) footer() string {
 		} else if m.hint != "" {
 			top = line([]seg{{m.hint, stDim}}, m.w, false) + "\n"
 		}
-		return top + m.in.View() + "\n" + line([]seg{{"Enter 決定  Esc やめる", stDim}}, m.w, false)
+		return top + m.in.View() + "\n" + line([]seg{{"Enter ok  Esc cancel", stDim}}, m.w, false)
 	}
 	if m.msg != "" {
 		return line([]seg{{m.msg, stWarn}}, m.w, false) + "\n" + hints

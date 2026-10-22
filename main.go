@@ -9,56 +9,61 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const usage = `nichiji — CSV(日時,内容[,メモ])の予定表。1ファイル = 1人か1台
+const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
 
-  nichiji [ファイル|ディレクトリ ...]          TUI(縦の表。行 = 日時、列 = ファイル)
-  nichiji ls [-days 14] [-past 0] [-u] [ファイル ...]   直近の予定を表示して終わる
-  nichiji ls -overdue [ファイル ...]             期限切れ(LATE)だけ。あれば終了コード 1
-  nichiji add [-f ファイル] [-d 日時] [-m メモ] 内容   1行追記。-d 無しは未定メモ
-  nichiji set -f ファイル (-match 語 | -at 日時) [-status 完了] [-end now|+30|15:20] [-d 日時] [-note 結果] [-text 内容] [-m メモ] [-force]
-                                               1件を書き換える(重なると拒否)
-  nichiji done -f ファイル -match 語 [-note 結果]  = set -status 完了 -end now
-  nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] ファイル ...
-                                               全員が空いている枠を探す
-  共通: -now "2026-12-24 10:00"   今日を差し替える(確認用)
+  nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
+  nichiji ls [-days 14] [-past 0] [-u] [FILE ...]  list upcoming entries
+  nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
+  nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
+  nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry; no -d = undated
+  nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
+                                               rewrite one entry (refused if it overlaps)
+  nichiji done -f FILE -match WORD [-note TEXT]  = set -status done -end now
+  nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
+  nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
+                                               notify before start and when LATE (once each)
+  common: -now "2026-12-24 10:00"   pretend it is this time
 
-日時: 2026-10-25 14:00 / 14:00-15:30(終わりつき) / 10/25 / 14:00 / +3 / +3 9:00 / 空=未定
-繰り返し: */12/25(毎年) 1990*/8/29(内容の \a が年齢) w=日 10:00-11:00(毎週)
-          d=1|d=15(毎月) w=土&b=1(最終土曜) m=1&w=月&a=2(1月第2月曜)
-同じファイルで時刻が重なる予定は入れられない(別ファイルは可)
-内容の先頭の [予約] [実行中] は未完、[完了] [中止] は済み(TUI では隠れる、v で出す)
-CSV の空行と # で始まる行は無視し、保存してもそのまま残る
-既定ファイル: $NICHIJI_FILE か ~/.local/share/nichiji/nichiji.csv
+WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | +3 | +3 9:00 | empty = undated
+repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age) w=sun 10:00-11:00 (weekly)
+        d=1|d=15 (monthly) w=sat&b=1 (last Saturday) m=1&w=mon&a=2 (2nd Monday of January)
+entries with a time may not overlap within one file (different files may)
+leading [reserved] [running] = open, [done] [canceled] = closed (hidden in the TUI, v to show)
+blank lines and lines starting with # are ignored and kept as they are
+default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
 `
 
 func main() {
 	sub := ""
 	args := os.Args[1:]
-	if len(args) > 0 && strings.Contains(" add ls free set done ", " "+args[0]+" ") {
+	if len(args) > 0 && strings.Contains(" add ls free set done find notify ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	nowS := fs.String("now", "", "今日を差し替える")
-	file := fs.String("f", defaultFile(), "add の書込先")
-	when := fs.String("d", "", "add の日時")
-	days := fs.Int("days", 14, "ls で何日先まで")
-	past := fs.Int("past", 0, "ls で何日前から")
-	undef := fs.Bool("u", false, "ls で未定も並べる")
-	length := fs.Int("len", 60, "free で必要な長さ(分)")
-	fromS := fs.String("from", "9:00", "free で1日の探し始め")
-	toS := fs.String("to", "18:00", "free で1日の探し終わり")
+	nowS := fs.String("now", "", "pretend now is this date/time")
+	file := fs.String("f", defaultFile(), "file to write (add/set/done)")
+	when := fs.String("d", "", "date/time")
+	days := fs.Int("days", 14, "days ahead")
+	past := fs.Int("past", 0, "days back")
+	undef := fs.Bool("u", false, "ls: also list undated")
+	length := fs.Int("len", 60, "free: minutes needed")
+	fromS := fs.String("from", "9:00", "free: day starts")
+	toS := fs.String("to", "18:00", "free: day ends")
 	var so setOpts
-	fs.StringVar(&so.match, "match", "", "set: 内容の部分一致で選ぶ")
-	fs.StringVar(&so.at, "at", "", "set: 開始の日時で選ぶ")
-	fs.StringVar(&so.end, "end", "", "set: 終わり now / +30 / 15:20")
-	fs.StringVar(&so.st, "status", "", "set: 先頭の [状態] を書き換える")
-	fs.StringVar(&so.note, "note", "", "set: 内容の末尾に「 | 」で足す")
-	fs.StringVar(&so.text, "text", "", "set: 内容を丸ごと置き換える")
-	memo := fs.String("m", "", "add / set: メモ欄(3列目)")
-	fs.BoolVar(&so.force, "force", false, "set: 重なっても書く")
-	full := fs.Bool("full", false, "ls: 端末の幅で切らない")
-	od := fs.Bool("overdue", false, "ls: 期限切れ(LATE)だけ。あれば終了コード 1")
+	fs.StringVar(&so.match, "match", "", "set: pick by substring of the text")
+	fs.StringVar(&so.at, "at", "", "set: pick by start date/time")
+	fs.StringVar(&so.end, "end", "", "set: end now / +30 / 15:20")
+	fs.StringVar(&so.st, "status", "", "set: replace the leading [status]")
+	fs.StringVar(&so.note, "note", "", "set: append \" | note\" to the text")
+	fs.StringVar(&so.text, "text", "", "set: replace the text")
+	memo := fs.String("m", "", "add/set: memo (3rd column)")
+	fs.BoolVar(&so.force, "force", false, "set: write even if it overlaps")
+	full := fs.Bool("full", false, "ls: do not cut lines to the terminal width")
+	od := fs.Bool("overdue", false, "ls: only LATE entries; exit 1 if any")
+	before := fs.Int("before", 10, "notify: minutes before start")
+	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / terminal)")
+	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
 	fs.Parse(args)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -68,7 +73,7 @@ func main() {
 	switch sub {
 	case "set", "done":
 		if sub == "done" {
-			so.st = "完了"
+			so.st = "done"
 			if so.end == "" {
 				so.end, so.softEnd = "now", true
 			}
@@ -104,6 +109,41 @@ func main() {
 		}
 		return
 	}
+	if sub == "find" {
+		if fs.NArg() == 0 {
+			die(fmt.Errorf("usage: nichiji find WORD [FILE ...]"))
+		}
+		q, rest := fs.Arg(0), fs.Args()[1:]
+		ps := expandArgs(rest)
+		if len(ps) == 0 {
+			ps = []string{defaultFile()}
+		}
+		var fl []*File
+		for _, p := range ps {
+			f, err := load(p)
+			if err != nil {
+				die(err)
+			}
+			fl = append(fl, f)
+		}
+		if find(os.Stdout, fl, q) == 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if sub == "notify" {
+		ps := expandArgs(fs.Args())
+		if len(ps) == 0 {
+			ps = []string{defaultFile()}
+		}
+		if *watch {
+			notifyWatch(ps, *before, *ncmd)
+		}
+		if err := notifyOnce(ps, *before, *ncmd); err != nil {
+			die(err)
+		}
+		return
+	}
 	paths := expandArgs(fs.Args())
 	if len(paths) == 0 {
 		paths = []string{defaultFile()}
@@ -135,7 +175,7 @@ func main() {
 		from, err1 := hhmm(*fromS)
 		to, err2 := hhmm(*toS)
 		if err1 != nil || err2 != nil || from >= to {
-			die(fmt.Errorf("-from / -to は 9:00 のように、from < to で"))
+			die(fmt.Errorf("-from/-to like 9:00, with from < to"))
 		}
 		freeList(os.Stdout, files, *days, from, to, *length)
 		return
