@@ -141,6 +141,43 @@ func unscheduled(e *Entry) bool {
 	return false
 }
 
+// untimedIn は f の時刻の無い予定を、日付の近い順(繰り返しは今日以降の次の回)に並べる。未定は最後。
+func untimedIn(f *File) []*Entry {
+	if f.Label {
+		return nil
+	}
+	type it struct {
+		e *Entry
+		t time.Time
+	}
+	var its []it
+	far := time.Date(9999, 1, 1, 0, 0, 0, 0, time.Local)
+	for _, e := range f.Entries() {
+		if !unscheduled(e) {
+			continue
+		}
+		t := far
+		switch e.Kind {
+		case kDate:
+			t = e.At
+		case kRepeat:
+			for d, i := day(now()), 0; i < 400; d, i = d.AddDate(0, 0, 1), i+1 {
+				if _, ok := e.on(d); ok {
+					t = d
+					break
+				}
+			}
+		}
+		its = append(its, it{e, t})
+	}
+	sort.SliceStable(its, func(i, j int) bool { return its[i].t.Before(its[j].t) })
+	out := make([]*Entry, len(its))
+	for i, x := range its {
+		out[i] = x.e
+	}
+	return out
+}
+
 func undatedEntries(files []*File) []*Entry {
 	var out []*Entry
 	for _, f := range files {
@@ -156,10 +193,12 @@ func undatedEntries(files []*File) []*Entry {
 	return out
 }
 
-// nextUndated は u の流れで、次の未定を選んで日時の入力欄を開く。無くなれば終わる。
+// nextUndated は u の流れで、選んでいる列の人の、時刻の無い予定を次に選んで日時の入力欄を開く。
+// 1ファイル = 1人なので、ほかの人の予定には飛ばない。無くなれば終わる。
 func (m *model) nextUndated() {
+	f := m.files[m.target]
 	var todo []*Entry
-	for _, e := range undatedEntries(m.files) {
+	for _, e := range untimedIn(f) {
 		if !m.schedSkip[e] {
 			todo = append(todo, e)
 		}
@@ -168,10 +207,20 @@ func (m *model) nextUndated() {
 		m.sched = false
 		m.inMode = inNone
 		m.in.Blur()
-		if n := len(undatedEntries(m.files)); n > 0 {
-			m.msg = fmt.Sprintf("%d without a time left (skipped)", n)
-		} else {
-			m.msg = "every entry has a time now"
+		switch left := len(untimedIn(f)); {
+		case left > 0:
+			m.msg = fmt.Sprintf("%s: %d without a time left (skipped)", f.Name(), left)
+		default:
+			m.msg = f.Name() + ": every entry has a time"
+			var others []string
+			for _, g := range m.files {
+				if n := len(untimedIn(g)); n > 0 && g != f {
+					others = append(others, fmt.Sprintf("%s %d", g.Name(), n))
+				}
+			}
+			if len(others) > 0 {
+				m.msg += "  (others: " + strings.Join(others, ", ") + "; h/l to move)"
+			}
 		}
 		return
 	}
@@ -184,7 +233,7 @@ func (m *model) nextUndated() {
 		pre = e.Raw + " "
 	}
 	m.startInput(inWhen, "when> ", pre)
-	m.hint = fmt.Sprintf("no time %d: %s  (add e.g. 9:00-9:15 | Enter as is = skip | Esc = stop)", len(todo), short(e.Text, 30))
+	m.hint = fmt.Sprintf("%s no time %d: %s  (add e.g. 9:00-9:15 | Enter as is = skip | Esc = stop)", f.Name(), len(todo), short(e.Text, 30))
 }
 
 type tickMsg struct{}
@@ -1374,6 +1423,9 @@ func (m *model) View() string {
 	natural := make([]int, len(m.files))
 	for j, f := range m.files {
 		natural[j] = runewidth.StringWidth(f.Name()) + 1
+		if n := len(untimedIn(f)); n > 0 {
+			natural[j] += len(fmt.Sprintf(":%d", n))
+		}
 		if m.hidden(j) {
 			natural[j] = 0
 		}
@@ -1432,7 +1484,11 @@ func (m *model) View() string {
 		if j == m.target {
 			st = stHead.Underline(true)
 		}
-		hdr += st.Render(fit(f.Name(), cws[j]-1)) + " "
+		name := f.Name()
+		if n := len(untimedIn(f)); n > 0 {
+			name += fmt.Sprintf(":%d", n) // この人の、時刻の無い予定の数
+		}
+		hdr += st.Render(fit(name, cws[j]-1)) + " "
 	}
 
 	today := day(now())
