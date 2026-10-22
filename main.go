@@ -14,6 +14,7 @@ const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One
   nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
   nichiji ls [-days 14] [-past 0] [-u] [FILE ...]  list upcoming entries
   nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
+  nichiji check [FILE ...]                     report unreadable dates, overlaps and LATE entries; exit 1 if any
   nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
   nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry; no -d = undated
   nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
@@ -36,7 +37,7 @@ default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
 func main() {
 	sub := ""
 	args := os.Args[1:]
-	if len(args) > 0 && strings.Contains(" add ls free set done find notify ", " "+args[0]+" ") {
+	if len(args) > 0 && strings.Contains(" add ls free set done find notify check ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
@@ -169,6 +170,12 @@ func main() {
 			return
 		}
 		list(os.Stdout, files, *past, *days, *undef, !*full, false)
+		return
+	}
+	if sub == "check" {
+		if check(os.Stdout, files) > 0 {
+			os.Exit(1)
+		}
 		return
 	}
 	if sub == "free" {

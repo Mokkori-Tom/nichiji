@@ -33,9 +33,12 @@ const (
 )
 
 type cell struct {
-	os  []occ
-	ctx bool // その日の日付だけの値を、時刻の行にも添えたもの(曜日など)。操作の対象にしない
+	os   []occ
+	ends []occ // この行の時刻(日)に終わる予定。表に「… end」と出す。選ぶと元の予定を編集する
+	ctx  bool  // その日の日付だけの値を、時刻の行にも添えたもの(曜日など)。操作の対象にしない
 }
+
+func (c cell) empty() bool { return len(c.os) == 0 && len(c.ends) == 0 }
 
 type trow struct {
 	date  time.Time // 行の日(月・年は期間の初日)
@@ -198,14 +201,14 @@ func (m *model) build() {
 	var group trow // 日・月・年の行をまとめる途中
 	flush := func() {
 		for _, c := range group.cells {
-			if len(c.os) > 0 {
+			if !c.empty() {
 				rows = append(rows, group)
 				break
 			}
 		}
 		group = trow{}
 	}
-	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+	dayOccs := func(d time.Time) [][]occ {
 		per := make([][]occ, n)
 		for j, f := range m.files {
 			for _, o := range occsOn(f.Entries(), d) {
@@ -214,6 +217,21 @@ func (m *model) build() {
 				}
 			}
 		}
+		return per
+	}
+	prev := dayOccs(from.AddDate(0, 0, -1))
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		per := dayOccs(d)
+		// d に終わる予定(前の日に始まって日付をまたいだものも)
+		ends := make([][]occ, n)
+		for j := range per {
+			for _, o := range append(append([]occ{}, prev[j]...), per[j]...) {
+				if o.timed && !o.end.IsZero() && day(o.end).Equal(d) {
+					ends[j] = append(ends[j], o)
+				}
+			}
+		}
+		prev = per
 		if m.level != lvTime {
 			key := d
 			switch m.level {
@@ -228,10 +246,17 @@ func (m *model) build() {
 			}
 			for j := range per {
 				group.cells[j].os = append(group.cells[j].os, per[j]...)
+				if m.level == lvDay {
+					for _, o := range ends[j] {
+						if !day(o.at).Equal(d) { // 日の目盛りでは、日付をまたいだものだけ
+							group.cells[j].ends = append(group.cells[j].ends, o)
+						}
+					}
+				}
 			}
 			continue
 		}
-		rows = append(rows, dayRows(d, per)...)
+		rows = append(rows, dayRows(d, per, ends)...)
 	}
 	flush()
 	m.rows = rows
@@ -240,7 +265,7 @@ func (m *model) build() {
 
 // dayRows は「時」の目盛りで1日分の行を作る。細かい方に合わせ、
 // 時刻を持たないファイル(曜日など)の値はその日のどの行にも添える。
-func dayRows(d time.Time, per [][]occ) []trow {
+func dayRows(d time.Time, per, ends [][]occ) []trow {
 	n := len(per)
 	timed := make([][]occ, n)
 	allday := make([][]occ, n)
@@ -253,6 +278,11 @@ func dayRows(d time.Time, per [][]occ) []trow {
 			} else {
 				allday[j] = append(allday[j], o)
 			}
+		}
+	}
+	for j := range ends {
+		for _, o := range ends[j] {
+			keys[mins(o.end, d)] = true
 		}
 	}
 	// 終日の行が要るのは、時刻も持つファイルに終日の値があるとき、または時刻の行が1つも無いとき
@@ -285,7 +315,12 @@ func dayRows(d time.Time, per [][]occ) []trow {
 					r.cells[j].os = append(r.cells[j].os, o)
 				}
 			}
-			if len(timed[j]) == 0 && len(allday[j]) > 0 {
+			for _, o := range ends[j] {
+				if mins(o.end, d) == k {
+					r.cells[j].ends = append(r.cells[j].ends, o)
+				}
+			}
+			if len(timed[j]) == 0 && len(ends[j]) == 0 && len(allday[j]) > 0 {
 				r.cells[j] = cell{os: allday[j], ctx: true}
 			}
 		}
@@ -315,14 +350,29 @@ func (m *model) curRow() (trow, bool) {
 	return m.rows[m.sel], true
 }
 
+// pickable はマスの中の選べる予定。終わりの行の予定も、元の予定として選べる。
+func pickable(c cell) []occ {
+	out := append([]occ{}, c.os...)
+	for _, o := range c.ends {
+		dup := false
+		for _, x := range c.os {
+			dup = dup || x.e == o.e
+		}
+		if !dup {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // openPick は選んでいるマスを開く。中の予定を1件ずつ選べるようにする。
 func (m *model) openPick() {
 	r, ok := m.curRow()
-	if !ok || len(r.cells[m.target].os) == 0 {
+	if !ok || r.cells[m.target].empty() {
 		m.msg = "this cell is empty"
 		return
 	}
-	m.pick, m.pickList, m.pickSel = true, r.cells[m.target].os, 0
+	m.pick, m.pickList, m.pickSel = true, pickable(r.cells[m.target]), 0
 }
 
 // refreshPick は書き換えのあとに、開いているマスの中身を取り直す。
@@ -331,11 +381,11 @@ func (m *model) refreshPick(e *Entry) {
 		return
 	}
 	r, ok := m.curRow()
-	if !ok || len(r.cells[m.target].os) == 0 {
+	if !ok || r.cells[m.target].empty() {
 		m.pick = false
 		return
 	}
-	m.pickList = r.cells[m.target].os
+	m.pickList = pickable(r.cells[m.target])
 	m.pickSel = min(m.pickSel, len(m.pickList)-1)
 	for i, o := range m.pickList {
 		if o.e == e {
@@ -357,9 +407,14 @@ func (m *model) curEntry() (*Entry, string) {
 		return nil, "no entry here"
 	}
 	c := r.cells[m.target]
+	if len(c.os) == 0 && len(c.ends) == 1 {
+		return c.ends[0].e, ""
+	}
 	switch {
-	case len(c.os) == 0:
+	case len(c.os) == 0 && len(c.ends) == 0:
 		return nil, "this cell is empty"
+	case len(c.os) == 0:
+		return nil, "several entries here: Enter to open the cell"
 	case len(c.os) > 1:
 		return nil, "several entries here: Enter to open the cell"
 	}
@@ -569,6 +624,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editedMsg:
 		m.reload()
 		m.refreshPick(nil)
+		// 手で書き換えたので、重なりや読めない日時が入っていないか見る
+		for _, f := range m.files {
+			if p := checkMsg(f); p != "" {
+				m.msg = p
+				break
+			}
+		}
 		if msg.err != nil {
 			m.msg = "editor: " + msg.err.Error()
 		}
@@ -934,7 +996,7 @@ func (m *model) occText(o occ, withTime bool) string {
 			t = o.at.Format("15:04") + " " + t
 		}
 		if !o.end.IsZero() {
-			t += " 〜" + o.end.Format("15:04")
+			t += " 〜" + endLabel(o.at, o.end)
 		}
 		if overdue(o) {
 			t = "LATE " + t
@@ -961,6 +1023,13 @@ func (m *model) cellText(c cell) string {
 				continue
 			}
 			seen[t] = true
+		}
+		ps = append(ps, t)
+	}
+	for _, o := range c.ends {
+		t := strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎") + " end"
+		if m.level == lvDay {
+			t = "〜" + endLabel(o.at, o.end) + " " + t
 		}
 		ps = append(ps, t)
 	}
@@ -1027,7 +1096,7 @@ func (m *model) View() string {
 		b.WriteString(lst.Render(fit(m.label(r), lw)))
 		for j, c := range r.cells {
 			st := stPlain
-			if c.ctx {
+			if c.ctx || (len(c.os) == 0 && len(c.ends) > 0) {
 				st = stDim
 			}
 			txt := m.cellText(c)
