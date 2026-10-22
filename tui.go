@@ -81,7 +81,8 @@ type model struct {
 	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
 	pickList []occ
 	pickSel  int
-	memoView bool // 選んだ予定の内容とメモを全文で見ている
+	ctxFile  []bool // 繰り返しだけのファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	memoView bool   // 選んだ予定の内容とメモを全文で見ている
 	memoOff  int
 	listMemo bool // ls 用: メモ本文も出す
 }
@@ -179,7 +180,27 @@ func (m *model) window() (time.Time, time.Time) {
 	return a.AddDate(0, 0, -120), a.AddDate(0, 0, 240)
 }
 
+// markCtx は繰り返しだけのファイルに印を付ける。全部がそうなら、どれにも付けない。
+func (m *model) markCtx() {
+	m.ctxFile = make([]bool, len(m.files))
+	all := true
+	for j, f := range m.files {
+		es := f.Entries()
+		m.ctxFile[j] = len(es) > 0
+		for _, e := range es {
+			if e.Kind != kRepeat {
+				m.ctxFile[j] = false
+			}
+		}
+		all = all && m.ctxFile[j]
+	}
+	if all {
+		m.ctxFile = make([]bool, len(m.files))
+	}
+}
+
 func (m *model) build() {
+	m.markCtx()
 	n := len(m.files)
 	var rows []trow
 	// 未定はいつも一番上
@@ -205,8 +226,8 @@ func (m *model) build() {
 	from, to := m.window()
 	var group trow // 日・月・年の行をまとめる途中
 	flush := func() {
-		for _, c := range group.cells {
-			if !c.empty() {
+		for j, c := range group.cells {
+			if !c.empty() && !m.ctxFile[j] {
 				rows = append(rows, group)
 				break
 			}
@@ -250,6 +271,9 @@ func (m *model) build() {
 				group = trow{date: key, slot: slotAll, first: true, cells: make([]cell, n)}
 			}
 			for j := range per {
+				if m.level >= lvMonth && m.ctxFile[j] {
+					continue // 月・年では曜日などを数えても意味がない
+				}
 				group.cells[j].os = append(group.cells[j].os, per[j]...)
 				if m.level == lvDay {
 					for _, o := range ends[j] {
@@ -261,7 +285,7 @@ func (m *model) build() {
 			}
 			continue
 		}
-		rows = append(rows, dayRows(d, per, ends)...)
+		rows = append(rows, dayRows(d, per, ends, m.ctxFile)...)
 	}
 	flush()
 	m.rows = m.withHeaders(rows)
@@ -270,7 +294,7 @@ func (m *model) build() {
 
 // dayRows は「時」の目盛りで1日分の行を作る。細かい方に合わせ、
 // 時刻を持たないファイル(曜日など)の値はその日のどの行にも添える。
-func dayRows(d time.Time, per, ends [][]occ) []trow {
+func dayRows(d time.Time, per, ends [][]occ, ctxFile []bool) []trow {
 	n := len(per)
 	timed := make([][]occ, n)
 	allday := make([][]occ, n)
@@ -278,7 +302,7 @@ func dayRows(d time.Time, per, ends [][]occ) []trow {
 	any := false
 	for j, os := range per {
 		for _, o := range os {
-			any = true
+			any = any || !ctxFile[j]
 			if o.timed {
 				timed[j] = append(timed[j], o)
 				keys[mins(o.at, d)] = true
@@ -289,7 +313,7 @@ func dayRows(d time.Time, per, ends [][]occ) []trow {
 	}
 	for j := range ends {
 		for _, o := range ends[j] {
-			any = true
+			any = any || !ctxFile[j]
 			keys[mins(o.end, d)] = true
 		}
 	}
@@ -351,13 +375,14 @@ func (m *model) withHeaders(rows []trow) []trow {
 			continue
 		}
 		y, mo := r.date.Year(), int(r.date.Month())
-		if y != lastY {
+		// 時・日の目盛りでは「2026-10」の見出しだけ(年は月の見出しに含める)、月の目盛りでは年の見出し
+		if m.level == lvMonth && y != lastY {
 			out = append(out, trow{date: time.Date(y, 1, 1, 0, 0, 0, 0, time.Local), slot: slotYear, cells: make([]cell, n)})
-			lastY, lastM = y, -1
+			lastY = y
 		}
-		if m.level <= lvDay && mo != lastM {
+		if m.level <= lvDay && (y != lastY || mo != lastM) {
 			out = append(out, trow{date: time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, time.Local), slot: slotMonth, cells: make([]cell, n)})
-			lastM = mo
+			lastY, lastM = y, mo
 		}
 		out = append(out, r)
 	}
@@ -520,7 +545,19 @@ func (m *model) jumpNow() {
 			}
 		}
 	}
-	m.off = max(0, m.sel-3)
+	m.showDay()
+}
+
+// showDay は選んだ行の日の行(と月の見出し)が画面の一番上に来るようにする。
+func (m *model) showDay() {
+	off := m.sel
+	for off > 0 && (m.rows[off-1].date.Equal(m.rows[m.sel].date) || m.rows[off-1].slot == slotMonth) && m.rows[off-1].slot != slotUndef {
+		off--
+		if m.rows[off].slot == slotMonth {
+			break
+		}
+	}
+	m.off = off
 }
 
 // jumpEdge は一番古い(last なら一番新しい)日付つきの予定へ飛ぶ。
@@ -1021,7 +1058,8 @@ func fit(s string, w int) string {
 
 func dateLabel(d time.Time) string { return d.Format("2006-01-02") }
 
-// label は左の欄。階層表示なので年・月は見出しの行に1回だけ書き、下の行は「/日」「/時刻」だけ。
+// label は左の欄。月(月の目盛りでは年)は見出しの行に1回だけ書き、
+// その下は日だけ、時刻は2文字下げる(khal / gcalcli のアジェンダ風)。
 func (m *model) label(r trow) string {
 	switch {
 	case r.slot == slotUndef:
@@ -1032,17 +1070,17 @@ func (m *model) label(r trow) string {
 	case r.slot == slotYear:
 		return r.date.Format("2006")
 	case r.slot == slotMonth:
-		return r.date.Format("/01")
+		return r.date.Format("2006-01")
 	case m.level == lvYear:
 		return r.date.Format("2006")
 	case m.level == lvMonth:
-		return r.date.Format("/01")
+		return r.date.Format("01")
 	case m.level == lvDay:
-		return r.date.Format("/02")
+		return r.date.Format("02")
 	case r.slot >= 0:
-		return fmt.Sprintf("/%02d:%02d", r.slot/60, r.slot%60)
+		return fmt.Sprintf("  %02d:%02d", r.slot/60, r.slot%60)
 	case r.first:
-		return r.date.Format("/02")
+		return r.date.Format("02")
 	}
 	return ""
 }
@@ -1075,8 +1113,10 @@ func (m *model) crumb() string {
 		return r.date.Format("2006")
 	case m.level == lvYear:
 		return ""
+	case m.level == lvTime && r.slot >= 0:
+		return r.date.Format("01-02") // 日の行が画面の外なら、どの日の時刻か
 	}
-	return r.date.Format("2006/01")
+	return r.date.Format("2006-01")
 }
 
 // shortDate は今年なら年を省く(狭い画面で左の欄を細くするため)。
