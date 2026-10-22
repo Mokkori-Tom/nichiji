@@ -32,6 +32,7 @@ const (
 	slotUndef = -2 // 未定
 	slotYear  = -3 // 見出し: 年が変わるところ
 	slotMonth = -4 // 見出し: 月が変わるところ
+	slotDate  = -5 // 日付だけの行(その下に終日の値と時刻の行が並ぶ)
 )
 
 type cell struct {
@@ -229,6 +230,8 @@ func (m *model) build() {
 		default:
 			if m.level >= lvMonth {
 				group = mergeSame(group)
+			} else {
+				rows = append(rows, trow{date: group.date, slot: slotDate, first: true, cells: make([]cell, n)})
 			}
 			rows = append(rows, splitDay(group)...)
 		}
@@ -320,14 +323,15 @@ func dayRows(d time.Time, per, ends [][]occ, ctxFile []bool) []trow {
 	if !any {
 		return nil
 	}
-	// 日の見出しの行(終日の値はここに。曜日などもここに1回だけ出る)
-	nAll := 1
+	// 日付だけの行を先に置き、その下に終日の値(曜日など)、時刻の行と並べる。
+	// 左の欄は時刻の幅で足りるので、予定の列を広く取れる
+	nAll := 0
 	for j := range per {
 		nAll = max(nAll, len(allday[j]))
 	}
-	var rows []trow
+	rows := []trow{{date: d, slot: slotDate, first: true, cells: make([]cell, n)}}
 	for i := 0; i < nAll; i++ {
-		r := trow{date: d, slot: slotAll, first: i == 0, cells: make([]cell, n)}
+		r := trow{date: d, slot: slotAll, cells: make([]cell, n)}
 		for j := range per {
 			if i < len(allday[j]) {
 				r.cells[j].os = []occ{allday[j][i]}
@@ -417,7 +421,7 @@ func splitDay(g trow) []trow {
 	return rows
 }
 
-func isHdr(r trow) bool { return r.slot == slotYear || r.slot == slotMonth }
+func isHdr(r trow) bool { return r.slot == slotYear || r.slot == slotMonth || r.slot == slotDate }
 
 // skipHdr は見出しの行に止まらないよう dir の向きへずらす。
 func (m *model) skipHdr(dir int) {
@@ -1109,7 +1113,7 @@ func fit(s string, w int) string {
 
 func dateLabel(d time.Time) string { return d.Format("2006-01-02") }
 
-// label は左の欄。日の行は年月日(月・年の目盛りでは年月・年)、時刻は2文字下げる(khal / gcalcli のアジェンダ風)。
+// label は左の欄。日付は日付だけの行に書き(月・年の目盛りでは年月・年)、時刻は2文字下げる(khal / gcalcli のアジェンダ風)。
 // 同じ日の2件目以降は空ける。
 func (m *model) label(r trow) string {
 	switch {
@@ -1122,8 +1126,12 @@ func (m *model) label(r trow) string {
 		return r.date.Format("2006")
 	case r.slot == slotMonth:
 		return r.date.Format("2006-01")
+	case r.slot == slotDate:
+		return dateLabel(r.date)
+	case r.slot == slotAll && m.level <= lvDay:
+		return "" // 日付は上の行に書いてある
 	case !r.first && r.slot < 0:
-		return "" // 同じ日(月・年)の2件目以降
+		return "" // 同じ月・年の2件目以降
 	case m.level == lvYear:
 		return r.date.Format("2006")
 	case m.level == lvMonth:
@@ -1156,14 +1164,14 @@ func (m *model) crumb() string {
 	}
 	r := m.rows[m.off]
 	switch {
-	case r.slot == slotUndef || isHdr(r):
+	case r.slot == slotUndef || r.slot == slotYear || r.slot == slotMonth:
 		return ""
 	case m.level == lvMonth:
 		return r.date.Format("2006")
 	case m.level == lvYear:
 		return ""
-	case m.level == lvTime:
-		return r.date.Format("2006-01-02") // 日の行が画面の外に出ても、どの日か分かるように
+	case m.level <= lvDay:
+		return r.date.Format("2006-01-02") // 日付の行が画面の外に出ても、どの日か分かるように
 	}
 	return r.date.Format("2006-01")
 }
@@ -1265,6 +1273,10 @@ func (m *model) View() string {
 	if m.sel >= m.off+bodyH {
 		m.off = m.sel - bodyH + 1
 	}
+	// 一番上のすぐ上が日付だけの行なら、それも見せる(どの日の予定か分かるように)
+	for m.off > 0 && isHdr(m.rows[m.off-1]) && m.sel < m.off-1+bodyH {
+		m.off--
+	}
 	// 見えている行から、左の欄と各列の幅を決める
 	lw := 1
 	natural := make([]int, len(m.files))
@@ -1276,7 +1288,9 @@ func (m *model) View() string {
 	}
 	for i := m.off; i < len(m.rows) && i < m.off+bodyH; i++ {
 		r := m.rows[i]
-		lw = max(lw, runewidth.StringWidth(m.label(r))+1)
+		if !isHdr(r) {
+			lw = max(lw, runewidth.StringWidth(m.label(r))+1)
+		}
 		for j, c := range r.cells {
 			if !m.hidden(j) {
 				natural[j] = max(natural[j], runewidth.StringWidth(m.cellText(c))+1)
@@ -1339,6 +1353,15 @@ func (m *model) View() string {
 		lst := stDim
 		if r.first {
 			lst = stPlain
+		}
+		if r.slot == slotDate {
+			// 日付だけの行は、左の欄からはみ出して1行まるごと使う
+			st := stHead
+			if r.date.Equal(today) {
+				st = stToday
+			}
+			body = append(body, st.Render(runewidth.Truncate(m.label(r), m.w, "")))
+			continue
 		}
 		if isHdr(r) {
 			lst = stHead
