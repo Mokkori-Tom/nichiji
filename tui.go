@@ -1208,9 +1208,9 @@ func (m *model) cellText(c cell) string {
 		ps = append(ps, t)
 	}
 	for _, o := range c.ends {
-		t := strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎") + " end"
+		t := strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎")
 		if m.level == lvDay {
-			t = endLabel(o.at, o.end) + " " + t
+			t = endLabel(o.at, o.end) + " " + t + " end" // 日の目盛りには括弧が無いので end と書く
 		}
 		if m.level == lvTime {
 			t = "└" + t
