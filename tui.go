@@ -35,10 +35,12 @@ const (
 )
 
 type cell struct {
-	os   []occ
-	ends []occ // この行の時刻(日)に終わる予定。表に「… end」と出す。選ぶと元の予定を編集する
-	ctx  bool  // その日の日付だけの値を、時刻の行にも添えたもの(曜日など)。操作の対象にしない
-	mid  bool  // この行の時刻に、この列の予定が続いている途中(│ を引く)
+	os     []occ
+	ends   []occ // この行の時刻(日)に終わる予定。表に「… end」と出す。選ぶと元の予定を編集する
+	ctx    bool  // その日の日付だけの値を、時刻の行にも添えたもの(曜日など)。操作の対象にしない
+	mid    bool  // この行の時刻に、この列の予定が続いている途中(│ を引く)
+	n      int   // 月・年の目盛りで、同じ予定がこの期間に何回あるか
+	counts []int // mergeSame が数えた回数(os と同じ順)
 }
 
 func (c cell) empty() bool { return len(c.os) == 0 && len(c.ends) == 0 }
@@ -224,10 +226,11 @@ func (m *model) build() {
 		}
 		switch {
 		case !keep:
-		case m.level == lvDay:
-			rows = append(rows, splitDay(group)...)
 		default:
-			rows = append(rows, group)
+			if m.level >= lvMonth {
+				group = mergeSame(group)
+			}
+			rows = append(rows, splitDay(group)...)
 		}
 		group = trow{}
 	}
@@ -367,7 +370,29 @@ func dayRows(d time.Time, per, ends [][]occ, ctxFile []bool) []trow {
 	return rows
 }
 
-// splitDay は日の目盛りで、1日分のマスを1件1行に分ける(横に「 / 」で並べない)。
+// mergeSame は月・年の目盛りで、同じ予定(繰り返しなど)を1件にまとめて回数を数える。
+func mergeSame(g trow) trow {
+	for j, c := range g.cells {
+		var os []occ
+		idx := map[*Entry]int{}
+		cnt := map[*Entry]int{}
+		for _, o := range c.os {
+			if _, ok := idx[o.e]; !ok {
+				idx[o.e] = len(os)
+				os = append(os, o)
+			}
+			cnt[o.e]++
+		}
+		g.cells[j].os = os
+		g.cells[j].counts = make([]int, len(os))
+		for i, o := range os {
+			g.cells[j].counts[i] = cnt[o.e]
+		}
+	}
+	return g
+}
+
+// splitDay は日・月・年の目盛りで、1期間分のマスを1件1行に分ける(横に「 / 」で並べない)。
 func splitDay(g trow) []trow {
 	n := len(g.cells)
 	k := 1
@@ -381,6 +406,9 @@ func splitDay(g trow) []trow {
 	for j, c := range g.cells {
 		for i, o := range c.os {
 			rows[i].cells[j].os = []occ{o}
+			if i < len(c.counts) {
+				rows[i].cells[j].n = c.counts[i]
+			}
 		}
 		for i, o := range c.ends {
 			rows[len(c.os)+i].cells[j].ends = []occ{o}
@@ -1102,9 +1130,15 @@ func (m *model) label(r trow) string {
 	case r.slot == slotMonth:
 		return r.date.Format("2006-01")
 	case m.level == lvYear:
-		return r.date.Format("2006")
+		if r.first {
+			return r.date.Format("2006")
+		}
+		return ""
 	case m.level == lvMonth:
-		return r.date.Format("01")
+		if r.first {
+			return r.date.Format("01")
+		}
+		return ""
 	case m.level == lvDay:
 		if r.first {
 			return r.date.Format("02")
@@ -1215,7 +1249,6 @@ func (m *model) occText(o occ, withTime bool) string {
 
 func (m *model) cellText(c cell) string {
 	var ps []string
-	seen := map[string]bool{}
 	if m.level == lvTime && c.mid && len(c.os) == 0 && len(c.ends) == 0 {
 		return "│"
 	}
@@ -1229,13 +1262,8 @@ func (m *model) cellText(c cell) string {
 				t = " " + t
 			}
 		}
-		if m.level >= lvMonth {
-			// 月・年では同じ内容(曜日など)を1つにまとめ、件数を前に出す
-			t = strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎")
-			if seen[t] {
-				continue
-			}
-			seen[t] = true
+		if c.n > 1 {
+			t += fmt.Sprintf(" x%d", c.n) // 月・年で同じ予定が何回あるか
 		}
 		ps = append(ps, t)
 	}
@@ -1244,11 +1272,7 @@ func (m *model) cellText(c cell) string {
 		t = "└" + t // 日の目盛りでは、日付をまたいで続いてきたもの
 		ps = append(ps, t)
 	}
-	s := strings.Join(ps, " / ")
-	if m.level >= lvMonth && len(c.os) > 1 {
-		s = fmt.Sprintf("%d: %s", len(c.os), s)
-	}
-	return s
+	return strings.Join(ps, " / ")
 }
 
 func (m *model) View() string {
