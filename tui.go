@@ -216,11 +216,18 @@ func (m *model) build() {
 	from, to := m.window()
 	var group trow // 日・月・年の行をまとめる途中
 	flush := func() {
+		keep := false
 		for j, c := range group.cells {
 			if !c.empty() && !m.ctxFile[j] {
-				rows = append(rows, group)
-				break
+				keep = true
 			}
+		}
+		switch {
+		case !keep:
+		case m.level == lvDay:
+			rows = append(rows, splitDay(group)...)
+		default:
+			rows = append(rows, group)
 		}
 		group = trow{}
 	}
@@ -356,6 +363,28 @@ func dayRows(d time.Time, per, ends [][]occ, ctxFile []bool) []trow {
 			}
 		}
 		rows = append(rows, r)
+	}
+	return rows
+}
+
+// splitDay は日の目盛りで、1日分のマスを1件1行に分ける(横に「 / 」で並べない)。
+func splitDay(g trow) []trow {
+	n := len(g.cells)
+	k := 1
+	for _, c := range g.cells {
+		k = max(k, len(c.os)+len(c.ends))
+	}
+	rows := make([]trow, k)
+	for i := range rows {
+		rows[i] = trow{date: g.date, slot: slotAll, first: i == 0, cells: make([]cell, n)}
+	}
+	for j, c := range g.cells {
+		for i, o := range c.os {
+			rows[i].cells[j].os = []occ{o}
+		}
+		for i, o := range c.ends {
+			rows[len(c.os)+i].cells[j].ends = []occ{o}
+		}
 	}
 	return rows
 }
@@ -1077,7 +1106,10 @@ func (m *model) label(r trow) string {
 	case m.level == lvMonth:
 		return r.date.Format("01")
 	case m.level == lvDay:
-		return r.date.Format("02")
+		if r.first {
+			return r.date.Format("02")
+		}
+		return ""
 	case r.slot >= 0:
 		return fmt.Sprintf("  %02d:%02d", r.slot/60, r.slot%60)
 	case r.first:
@@ -1114,8 +1146,8 @@ func (m *model) crumb() string {
 		return r.date.Format("2006")
 	case m.level == lvYear:
 		return ""
-	case m.level == lvTime && r.slot >= 0:
-		return r.date.Format("01-02") // 日の行が画面の外なら、どの日の時刻か
+	case m.level == lvTime:
+		return r.date.Format("2006-01-02") // 日の行が画面の外に出ても、どの日か分かるように
 	}
 	return r.date.Format("2006-01")
 }
@@ -1241,7 +1273,6 @@ func (m *model) View() string {
 		}
 	}
 	crumb := m.crumb()
-	lw = max(lw, runewidth.StringWidth(crumb)+1)
 	cws := colWidths(natural, m.w-lw)
 
 	done := "done:hidden"
@@ -1256,17 +1287,22 @@ func (m *model) View() string {
 		}
 		lvs = append(lvs, seg{" " + nm, st})
 	}
+	// 見出し: 目盛り・画面の一番上の位置(年から)・今の時刻
+	pos := seg{"", stPlain}
+	if crumb != "" {
+		pos = seg{"  " + crumb, stPlain}
+	}
 	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
-		seg{"  " + done, stDim}, seg{"  " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
-	if m.w < 70 { // 狭い画面: 今の目盛りと時刻だけ
-		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}}
+		pos, seg{"  " + done, stDim}, seg{"  now " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
+	if m.w < 70 { // 狭い画面: 目盛り・位置・今の時刻だけ
+		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}, pos}
 		if !m.hideDone {
 			segs = append(segs, seg{"  +done", stDim})
 		}
-		title = line(append(segs, seg{"  " + now().Format("01-02 15:04"), stToday}), m.w, false)
+		title = line(append(segs, seg{"  now " + now().Format("15:04"), stToday}), m.w, false)
 	}
 
-	hdr := stDim.Render(fit(crumb, lw))
+	hdr := strings.Repeat(" ", lw)
 	for j, f := range m.files {
 		st := stDim
 		if j == m.target {
