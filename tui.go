@@ -117,14 +117,30 @@ func newModel(files []*File) *model {
 	m.build()
 	m.jumpNow()
 	if n := len(undatedEntries(files)); n > 0 {
-		m.msg = fmt.Sprintf("%d undated: press u to schedule them", n)
+		m.msg = fmt.Sprintf("%d entries have no time: press u to schedule them", n)
 	}
 	return m
 }
 
 func (m *model) Init() tea.Cmd { return tick() }
 
-// undatedEntries は日時を決めるべき予定(未定のまま、済んでいない。label のファイルは除く)。
+// unscheduled は時刻の枠が決まっていない予定。予定表の上の予定はどれも体を動かす時間なので、
+// 未定・日付だけ・時刻の無い繰り返しは、時刻を決めるよう促す。label のファイルと済んだ予定は除く。
+func unscheduled(e *Entry) bool {
+	if isDone(e) {
+		return false
+	}
+	switch e.Kind {
+	case kUndef:
+		return e.Raw == ""
+	case kDate:
+		return true
+	case kRepeat:
+		return e.min < 0
+	}
+	return false
+}
+
 func undatedEntries(files []*File) []*Entry {
 	var out []*Entry
 	for _, f := range files {
@@ -132,7 +148,7 @@ func undatedEntries(files []*File) []*Entry {
 			continue
 		}
 		for _, e := range f.Entries() {
-			if e.Kind == kUndef && e.Raw == "" && !isDone(e) {
+			if unscheduled(e) {
 				out = append(out, e)
 			}
 		}
@@ -153,17 +169,22 @@ func (m *model) nextUndated() {
 		m.inMode = inNone
 		m.in.Blur()
 		if n := len(undatedEntries(m.files)); n > 0 {
-			m.msg = fmt.Sprintf("%d undated left (skipped)", n)
+			m.msg = fmt.Sprintf("%d without a time left (skipped)", n)
 		} else {
-			m.msg = "no undated entries left"
+			m.msg = "every entry has a time now"
 		}
 		return
 	}
 	e := todo[0]
 	m.sched, m.inE = true, e
 	m.focus(e)
-	m.startInput(inWhen, "when> ", "")
-	m.hint = fmt.Sprintf("undated %d: %s  (e.g. 10/25 14:00-15:00 | +3 | empty = skip | Esc = stop)", len(todo), short(e.Text, 30))
+	// 日付だけ・繰り返しは今の日時を入れておき、時刻を足すだけにする(繰り返しが1回きりに化けないように)
+	pre := ""
+	if e.Raw != "" {
+		pre = e.Raw + " "
+	}
+	m.startInput(inWhen, "when> ", pre)
+	m.hint = fmt.Sprintf("no time %d: %s  (add e.g. 9:00-9:15 | Enter as is = skip | Esc = stop)", len(todo), short(e.Text, 30))
 }
 
 type tickMsg struct{}
@@ -701,13 +722,24 @@ func (m *model) focus(e *Entry) {
 		}
 	}
 	find := func() bool {
+		// 繰り返しは何度も出てくるので、今日以降で最初のものを選ぶ(無ければ最初のもの)
+		first, today := -1, day(now())
 		for i, r := range m.rows {
 			for _, o := range r.cells[m.target].os {
 				if o.e == e && !r.cells[m.target].ctx {
-					m.sel = i
-					return true
+					if first < 0 {
+						first = i
+					}
+					if !r.date.Before(today) {
+						m.sel = i
+						return true
+					}
 				}
 			}
+		}
+		if first >= 0 {
+			m.sel = first
+			return true
 		}
 		return false
 	}
@@ -875,7 +907,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
 		case inWhen:
-			if m.sched && val == "" {
+			if m.sched && val == m.inE.Raw {
 				m.schedSkip[m.inE] = true // 今回は飛ばす
 				m.nextUndated()
 				return m, nil
@@ -1379,7 +1411,7 @@ func (m *model) View() string {
 	}
 	und := seg{"", stWarn}
 	if n := len(undatedEntries(m.files)); n > 0 {
-		und.s = fmt.Sprintf("  undated:%d", n) // 決めるまで出し続ける
+		und.s = fmt.Sprintf("  no time:%d", n) // 決めるまで出し続ける
 	}
 	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
 		pos, und, seg{"  " + done, stDim}, seg{"  now " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
@@ -1561,7 +1593,7 @@ func (m *model) status() string {
 const hintShort = "j/k move h/l column +/- scale Enter open Space memo u schedule t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  u schedule undated one by one  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  u give a time to entries without one  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort

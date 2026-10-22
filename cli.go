@@ -126,11 +126,14 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, m
 			us = append(us, e)
 		}
 	}
+	if nt := len(undatedEntries(files)); nt > 0 {
+		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d entries have no time: schedule them (u in the TUI)", nt)))
+	}
 	if len(us) == 0 {
 		return n
 	}
 	if !undef {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d undated: schedule them (-u to list, u in the TUI)", len(us))))
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d undated (-u to list)", len(us))))
 		return n
 	}
 	fmt.Fprintln(w, stHead.Render("undated"))
