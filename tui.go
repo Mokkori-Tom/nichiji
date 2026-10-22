@@ -30,6 +30,8 @@ var lvNames = []string{"hour", "day", "month", "year"}
 const (
 	slotAll   = -1 // 終日
 	slotUndef = -2 // 未定
+	slotYear  = -3 // 見出し: 年が変わるところ
+	slotMonth = -4 // 見出し: 月が変わるところ
 )
 
 type cell struct {
@@ -262,7 +264,7 @@ func (m *model) build() {
 		rows = append(rows, dayRows(d, per, ends)...)
 	}
 	flush()
-	m.rows = rows
+	m.rows = m.withHeaders(rows)
 	m.clamp()
 }
 
@@ -273,8 +275,10 @@ func dayRows(d time.Time, per, ends [][]occ) []trow {
 	timed := make([][]occ, n)
 	allday := make([][]occ, n)
 	keys := map[int]bool{}
+	any := false
 	for j, os := range per {
 		for _, o := range os {
+			any = true
 			if o.timed {
 				timed[j] = append(timed[j], o)
 				keys[mins(o.at, d)] = true
@@ -285,19 +289,21 @@ func dayRows(d time.Time, per, ends [][]occ) []trow {
 	}
 	for j := range ends {
 		for _, o := range ends[j] {
+			any = true
 			keys[mins(o.end, d)] = true
 		}
 	}
-	// 終日の行が要るのは、時刻も持つファイルに終日の値があるとき、または時刻の行が1つも無いとき
-	nAll := 0
+	if !any {
+		return nil
+	}
+	// 日の見出しの行(終日の値はここに。曜日などもここに1回だけ出る)
+	nAll := 1
 	for j := range per {
-		if len(allday[j]) > 0 && (len(timed[j]) > 0 || len(keys) == 0) {
-			nAll = max(nAll, len(allday[j]))
-		}
+		nAll = max(nAll, len(allday[j]))
 	}
 	var rows []trow
 	for i := 0; i < nAll; i++ {
-		r := trow{date: d, slot: slotAll, cells: make([]cell, n)}
+		r := trow{date: d, slot: slotAll, first: i == 0, cells: make([]cell, n)}
 		for j := range per {
 			if i < len(allday[j]) {
 				r.cells[j].os = []occ{allday[j][i]}
@@ -323,16 +329,53 @@ func dayRows(d time.Time, per, ends [][]occ) []trow {
 					r.cells[j].ends = append(r.cells[j].ends, o)
 				}
 			}
-			if len(timed[j]) == 0 && len(ends[j]) == 0 && len(allday[j]) > 0 {
-				r.cells[j] = cell{os: allday[j], ctx: true}
-			}
 		}
 		rows = append(rows, r)
 	}
-	if len(rows) > 0 {
-		rows[0].first = true
-	}
 	return rows
+}
+
+func isHdr(r trow) bool { return r.slot == slotYear || r.slot == slotMonth }
+
+// withHeaders は年・月が変わるところに見出しの行を挟む(階層表示)。
+func (m *model) withHeaders(rows []trow) []trow {
+	if m.level == lvYear {
+		return rows
+	}
+	n := len(m.files)
+	var out []trow
+	lastY, lastM := -1, -1
+	for _, r := range rows {
+		if r.slot == slotUndef {
+			out = append(out, r)
+			continue
+		}
+		y, mo := r.date.Year(), int(r.date.Month())
+		if y != lastY {
+			out = append(out, trow{date: time.Date(y, 1, 1, 0, 0, 0, 0, time.Local), slot: slotYear, cells: make([]cell, n)})
+			lastY, lastM = y, -1
+		}
+		if m.level <= lvDay && mo != lastM {
+			out = append(out, trow{date: time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, time.Local), slot: slotMonth, cells: make([]cell, n)})
+			lastM = mo
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// skipHdr は見出しの行に止まらないよう dir の向きへずらす。
+func (m *model) skipHdr(dir int) {
+	for m.sel >= 0 && m.sel < len(m.rows) && isHdr(m.rows[m.sel]) {
+		m.sel += dir
+	}
+	if m.sel < 0 || m.sel >= len(m.rows) {
+		m.sel -= dir
+		for m.sel >= 0 && m.sel < len(m.rows) && isHdr(m.rows[m.sel]) {
+			m.sel -= dir
+		}
+	}
+	m.clamp()
 }
 
 // ---- 選択 ----
@@ -455,7 +498,7 @@ func (m *model) rowEnd(r trow) time.Time {
 // seek は t を含むか t より後の最初の行を選ぶ(未定の行は飛ばす)。
 func (m *model) seek(t time.Time) {
 	for i, r := range m.rows {
-		if r.slot != slotUndef && m.rowEnd(r).After(t) {
+		if r.slot != slotUndef && !isHdr(r) && m.rowEnd(r).After(t) {
 			m.sel = i
 			return
 		}
@@ -920,7 +963,14 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.ExecProcess(c, func(err error) tea.Msg { return editedMsg{err} })
 	}
 	m.clamp()
+	dir := 1
+	switch key {
+	case "k", "up", "ctrl+u", "pgup":
+		dir = -1
+	}
+	m.skipHdr(dir)
 	m.reanchor()
+	m.skipHdr(dir)
 	return m, nil
 }
 
@@ -971,6 +1021,7 @@ func fit(s string, w int) string {
 
 func dateLabel(d time.Time) string { return d.Format("2006-01-02") }
 
+// label は左の欄。階層表示なので年・月は見出しの行に1回だけ書き、下の行は「/日」「/時刻」だけ。
 func (m *model) label(r trow) string {
 	switch {
 	case r.slot == slotUndef:
@@ -978,21 +1029,54 @@ func (m *model) label(r trow) string {
 			return "undated"
 		}
 		return ""
-	case m.level == lvMonth:
-		return r.date.Format("2006-01")
+	case r.slot == slotYear:
+		return r.date.Format("2006")
+	case r.slot == slotMonth:
+		return r.date.Format("/01")
 	case m.level == lvYear:
 		return r.date.Format("2006")
+	case m.level == lvMonth:
+		return r.date.Format("/01")
 	case m.level == lvDay:
-		return shortDate(r.date)
+		return r.date.Format("/02")
+	case r.slot >= 0:
+		return fmt.Sprintf("/%02d:%02d", r.slot/60, r.slot%60)
+	case r.first:
+		return r.date.Format("/02")
 	}
-	d := strings.Repeat(" ", len(shortDate(r.date)))
-	if r.first {
-		d = shortDate(r.date)
+	return ""
+}
+
+// fullLabel は状態の行などに出す、省かない日時。
+func (m *model) fullLabel(r trow) string {
+	switch {
+	case r.slot == slotUndef:
+		return "undated"
+	case r.slot == slotYear || m.level == lvYear:
+		return r.date.Format("2006")
+	case r.slot == slotMonth || m.level == lvMonth:
+		return r.date.Format("2006-01")
+	case r.slot >= 0:
+		return m.rowTime(r).Format("2006-01-02 15:04")
 	}
-	if r.slot >= 0 {
-		return fmt.Sprintf("%s %02d:%02d", d, r.slot/60, r.slot%60)
+	return dateLabel(r.date)
+}
+
+// crumb は画面の一番上の行がどの年・月か(見出しが画面の外に出ても分かるように)。
+func (m *model) crumb() string {
+	if m.off >= len(m.rows) {
+		return ""
 	}
-	return d
+	r := m.rows[m.off]
+	switch {
+	case r.slot == slotUndef || isHdr(r):
+		return ""
+	case m.level == lvMonth:
+		return r.date.Format("2006")
+	case m.level == lvYear:
+		return ""
+	}
+	return r.date.Format("2006/01")
 }
 
 // shortDate は今年なら年を省く(狭い画面で左の欄を細くするため)。
@@ -1104,6 +1188,8 @@ func (m *model) View() string {
 			natural[j] = max(natural[j], runewidth.StringWidth(m.cellText(c))+1)
 		}
 	}
+	crumb := m.crumb()
+	lw = max(lw, runewidth.StringWidth(crumb)+1)
 	cws := colWidths(natural, m.w-lw)
 
 	done := "done:hidden"
@@ -1128,7 +1214,7 @@ func (m *model) View() string {
 		title = line(append(segs, seg{"  " + now().Format("01-02 15:04"), stToday}), m.w, false)
 	}
 
-	hdr := strings.Repeat(" ", lw)
+	hdr := stDim.Render(fit(crumb, lw))
 	for j, f := range m.files {
 		st := stDim
 		if j == m.target {
@@ -1151,6 +1237,9 @@ func (m *model) View() string {
 		lst := stDim
 		if r.first {
 			lst = stPlain
+		}
+		if isHdr(r) {
+			lst = stHead
 		}
 		if r.slot != slotUndef && r.date.Equal(today) && m.level <= lvDay {
 			lst = stToday
@@ -1233,7 +1322,7 @@ func (m *model) memoBody(bodyH int) []string {
 // pickBody は開いたマスの中身を1件1行で並べる。
 func (m *model) pickBody(bodyH int) []string {
 	r, _ := m.curRow()
-	out := []string{line([]seg{{fmt.Sprintf(" %s  %s  (%d)  j/k pick  e m s x E edit  Esc close", m.files[m.target].Name(), strings.TrimSpace(m.label(r)), len(m.pickList)), stHead}}, m.w, false)}
+	out := []string{line([]seg{{fmt.Sprintf(" %s  %s  (%d)  j/k pick  e m s x E edit  Esc close", m.files[m.target].Name(), m.fullLabel(r), len(m.pickList)), stHead}}, m.w, false)}
 	h := bodyH - 1
 	off := max(0, m.pickSel-h+1)
 	for i := off; i < len(m.pickList) && i < off+h; i++ {
@@ -1257,7 +1346,7 @@ func (m *model) status() string {
 		if !ok {
 			return ""
 		}
-		return m.files[m.target].Name() + "  " + strings.TrimSpace(m.label(r))
+		return m.files[m.target].Name() + "  " + m.fullLabel(r)
 	}
 	s := e.file.Name() + "  " + e.Raw
 	if e.Raw == "" {
