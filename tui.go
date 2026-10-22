@@ -65,32 +65,30 @@ const (
 )
 
 type model struct {
-	files     []*File
-	target    int
-	level     int
-	rows      []trow
-	sel, off  int
-	anchor    time.Time
-	hideDone  bool
-	w, h      int
-	in        textinput.Model
-	inMode    int
-	inE       *Entry
-	inRow     trow
-	msg       string
-	hint      string
-	help      bool
-	gPending  bool
-	search    string
-	pick      bool // マスを開いて中の予定を1件ずつ選んでいる
-	pickList  []occ
-	pickSel   int
-	ctxFile   []bool          // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
-	sched     bool            // u: 未定の予定を順に選んで日時を決めている
-	schedSkip map[*Entry]bool // 今回は飛ばした未定
-	memoView  bool            // 選んだ予定の内容とメモを全文で見ている
-	memoOff   int
-	listMemo  bool // ls 用: メモ本文も出す
+	files    []*File
+	target   int
+	level    int
+	rows     []trow
+	sel, off int
+	anchor   time.Time
+	hideDone bool
+	w, h     int
+	in       textinput.Model
+	inMode   int
+	inE      *Entry
+	inRow    trow
+	msg      string
+	hint     string
+	help     bool
+	gPending bool
+	search   string
+	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
+	pickList []occ
+	pickSel  int
+	ctxFile  []bool // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	memoView bool   // 選んだ予定の内容とメモを全文で見ている
+	memoOff  int
+	listMemo bool // ls 用: メモ本文も出す
 }
 
 var (
@@ -117,7 +115,7 @@ func newModel(files []*File) *model {
 	m.build()
 	m.jumpNow()
 	if n := len(undatedEntries(files)); n > 0 {
-		m.msg = fmt.Sprintf("%d entries have no time: press u to schedule them", n)
+		m.msg = fmt.Sprintf("%d entries have no time: press u to jump to them", n)
 	}
 	return m
 }
@@ -193,47 +191,43 @@ func undatedEntries(files []*File) []*Entry {
 	return out
 }
 
-// nextUndated は u の流れで、選んでいる列の人の、時刻の無い予定を次に選んで日時の入力欄を開く。
-// 1ファイル = 1人なので、ほかの人の予定には飛ばない。無くなれば終わる。
-func (m *model) nextUndated() {
-	f := m.files[m.target]
-	var todo []*Entry
-	for _, e := range untimedIn(f) {
-		if !m.schedSkip[e] {
-			todo = append(todo, e)
-		}
+// jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、
+// 押すたびに次へ巡る。移った先の列も選ぶので、誰の予定か分かる。時刻は s で決める。
+func (m *model) jumpUntimed() {
+	var all []*Entry
+	for _, f := range m.files {
+		all = append(all, untimedIn(f)...)
 	}
-	if len(todo) == 0 {
-		m.sched = false
-		m.inMode = inNone
-		m.in.Blur()
-		switch left := len(untimedIn(f)); {
-		case left > 0:
-			m.msg = fmt.Sprintf("%s: %d without a time left (skipped)", f.Name(), left)
-		default:
-			m.msg = f.Name() + ": every entry has a time"
-			var others []string
-			for _, g := range m.files {
-				if n := len(untimedIn(g)); n > 0 && g != f {
-					others = append(others, fmt.Sprintf("%s %d", g.Name(), n))
-				}
-			}
-			if len(others) > 0 {
-				m.msg += "  (others: " + strings.Join(others, ", ") + "; h/l to move)"
-			}
-		}
+	if len(all) == 0 {
+		m.msg = "every entry has a time"
 		return
 	}
-	e := todo[0]
-	m.sched, m.inE = true, e
-	m.focus(e)
-	// 日付だけ・繰り返しは今の日時を入れておき、時刻を足すだけにする(繰り返しが1回きりに化けないように)
-	pre := ""
-	if e.Raw != "" {
-		pre = e.Raw + " "
+	// 日付の近い順に全員分を並べ直す(untimedIn はファイルごとの順)
+	key := func(e *Entry) time.Time {
+		switch e.Kind {
+		case kDate:
+			return e.At
+		case kRepeat:
+			for d, i := day(now()), 0; i < 400; d, i = d.AddDate(0, 0, 1), i+1 {
+				if _, ok := e.on(d); ok {
+					return d
+				}
+			}
+		}
+		return time.Date(9999, 1, 1, 0, 0, 0, 0, time.Local)
 	}
-	m.startInput(inWhen, "when> ", pre)
-	m.hint = fmt.Sprintf("%s no time %d: %s  (add e.g. 9:00-9:15 | Enter as is = skip | Esc = stop)", f.Name(), len(todo), short(e.Text, 30))
+	sort.SliceStable(all, func(i, j int) bool { return key(all[i]).Before(key(all[j])) })
+	next := 0
+	if cur, _ := m.curEntry(); cur != nil {
+		for i, e := range all {
+			if e == cur {
+				next = (i + 1) % len(all)
+			}
+		}
+	}
+	e := all[next]
+	m.focus(e)
+	m.msg = fmt.Sprintf("no time %d/%d: %s  %s  (s to set a time, u for the next)", next+1, len(all), e.file.Name(), short(e.Text, 30))
 }
 
 type tickMsg struct{}
@@ -911,7 +905,6 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
 		m.inMode = inNone
-		m.sched = false
 		m.in.Blur()
 		return m, nil
 	case tea.KeyEnter:
@@ -956,11 +949,6 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
 		case inWhen:
-			if m.sched && val == m.inE.Raw {
-				m.schedSkip[m.inE] = true // 今回は飛ばす
-				m.nextUndated()
-				return m, nil
-			}
 			base := m.anchor
 			if m.inE.Kind == kDate || m.inE.Kind == kTime {
 				base = m.inE.At
@@ -982,10 +970,6 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
-			if m.sched {
-				m.nextUndated()
-				return m, nil
-			}
 		case inSearch:
 			m.search = val
 			m.findNext(1)
@@ -1130,8 +1114,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "N":
 		m.findNext(-1)
 	case "u":
-		m.schedSkip = map[*Entry]bool{}
-		m.nextUndated()
+		m.jumpUntimed()
 	case "a":
 		m.startInput(inQuick, "quick (no date)> ", "")
 	case "A":
@@ -1162,7 +1145,11 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "m":
 			m.startInput(inMemo, "memo> ", e.Memo)
 		case "s":
-			m.startInput(inWhen, "when> ", e.Raw)
+			pre := e.Raw
+			if unscheduled(e) && pre != "" {
+				pre += " " // 日付だけ・時刻の無い繰り返しには、時刻を続けて打てるように
+			}
+			m.startInput(inWhen, "when> ", pre)
 			m.hint = "e.g. 10/25 14:00-15:00 | 14:00 | +3 | */12/25 | w=sun 10:00 | empty = undated"
 		case "x":
 			m.inMode = inDelete
@@ -1423,9 +1410,6 @@ func (m *model) View() string {
 	natural := make([]int, len(m.files))
 	for j, f := range m.files {
 		natural[j] = runewidth.StringWidth(f.Name()) + 1
-		if n := len(untimedIn(f)); n > 0 {
-			natural[j] += len(fmt.Sprintf(":%d", n))
-		}
 		if m.hidden(j) {
 			natural[j] = 0
 		}
@@ -1484,11 +1468,7 @@ func (m *model) View() string {
 		if j == m.target {
 			st = stHead.Underline(true)
 		}
-		name := f.Name()
-		if n := len(untimedIn(f)); n > 0 {
-			name += fmt.Sprintf(":%d", n) // この人の、時刻の無い予定の数
-		}
-		hdr += st.Render(fit(name, cws[j]-1)) + " "
+		hdr += st.Render(fit(f.Name(), cws[j]-1)) + " "
 	}
 
 	today := day(now())
@@ -1646,10 +1626,10 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l column +/- scale Enter open Space memo u schedule t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  u give a time to entries without one  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  u jump to the next entry without a time  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort
