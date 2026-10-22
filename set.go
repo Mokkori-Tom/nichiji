@@ -42,6 +42,7 @@ type setOpts struct {
 	match, at     string
 	when, end, st string
 	note, text    string
+	memo          string
 	force         bool
 	softEnd       bool // done: 日時つきの予定のときだけ終わりを今にする
 }
@@ -161,6 +162,9 @@ func setEntry(path string, o setOpts) (string, error) {
 		e.setRaw(r)
 	}
 	e.Text = text
+	if o.memo != "" {
+		e.Memo = o.memo
+	}
 	if c, bad := e.clash(f); bad && !o.force {
 		return "", fmt.Errorf("%v(それでも書くなら -force)", clashMsg(c))
 	}

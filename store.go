@@ -25,6 +25,7 @@ const (
 type Entry struct {
 	Raw  string // 日時列。触っていない行はこのまま書き戻す
 	Text string
+	Memo string // 3列目(無ければ空。空なら2列で書く)
 	At   time.Time
 	End  time.Time // 終わり(無ければゼロ)
 	Kind int
@@ -33,6 +34,7 @@ type Entry struct {
 	emin int    // 繰り返しの終わり(分)、-1 = 無し
 	base int    // 起点の年(\a \y 用)
 	src  string // 読み込んだ行そのもの。変更したら空にする
+	line int    // ファイルの何行目か(エディタで開く位置。新しい予定は 0)
 	file *File
 }
 
@@ -271,6 +273,7 @@ func load(path string) (*File, error) {
 			continue
 		}
 		// 内容に改行を含む("…" で囲まれた)行は閉じるまで繋ぐ
+		first := i + 1
 		rec, err := csv1(ln)
 		for err != nil && i+1 < len(lines) {
 			i++
@@ -280,10 +283,13 @@ func load(path string) (*File, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		e := &Entry{file: f}
+		e := &Entry{file: f, line: first}
 		e.setRaw(rec[0])
 		if len(rec) > 1 {
-			e.Text = strings.Join(rec[1:], ",")
+			e.Text = rec[1]
+		}
+		if len(rec) > 2 {
+			e.Memo = strings.Join(rec[2:], ",")
 		}
 		e.src = ln
 		f.add(e)
@@ -332,7 +338,7 @@ func save(f *File) error {
 	w := csv.NewWriter(tmp)
 	for _, it := range f.Items {
 		if it.e != nil && it.e.src == "" {
-			w.Write([]string{it.e.Raw, it.e.Text})
+			w.Write(it.e.record())
 		} else if it.e != nil {
 			w.Flush()
 			tmp.WriteString(it.e.src + "\n")
@@ -359,7 +365,14 @@ func save(f *File) error {
 }
 
 // appendLine は TUI を開かずに1行足す(nichiji add 用)。
-func appendLine(path, raw, text string) error {
+func (e *Entry) record() []string {
+	if e.Memo == "" {
+		return []string{e.Raw, e.Text}
+	}
+	return []string{e.Raw, e.Text, e.Memo}
+}
+
+func appendLine(path string, e *Entry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -375,7 +388,7 @@ func appendLine(path, raw, text string) error {
 		}
 	}
 	w := csv.NewWriter(fh)
-	w.Write([]string{raw, text})
+	w.Write(e.record())
 	w.Flush()
 	return w.Error()
 }
@@ -418,11 +431,6 @@ func defaultFile() string {
 func day(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
-}
-
-func weekStart(t time.Time) time.Time {
-	d := day(t)
-	return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
 }
 
 // ---- 重なり ----

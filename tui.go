@@ -1,0 +1,997 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+)
+
+// 表示は1つの縦の表だけ。行 = 日時(値のある所だけ)、列 = ファイル。
+// 時 → 日 → 月 → 年 は同じ表の目盛りを粗くするだけ。
+
+const (
+	lvTime = iota
+	lvDay
+	lvMonth
+	lvYear
+)
+
+var lvNames = []string{"時", "日", "月", "年"}
+
+const (
+	slotAll   = -1 // 終日
+	slotUndef = -2 // 未定
+)
+
+type cell struct {
+	os  []occ
+	ctx bool // その日の日付だけの値を、時刻の行にも添えたもの(曜日など)。操作の対象にしない
+}
+
+type trow struct {
+	date  time.Time // 行の日(月・年は期間の初日)
+	slot  int       // 0時からの分。slotAll / slotUndef
+	first bool      // その日の最初の行(日付を書く)
+	cells []cell
+}
+
+const (
+	inNone = iota
+	inQuick
+	inSlot
+	inText
+	inMemo
+	inWhen
+	inSearch
+	inDelete
+)
+
+type model struct {
+	files    []*File
+	target   int
+	level    int
+	rows     []trow
+	sel, off int
+	anchor   time.Time
+	hideDone bool
+	w, h     int
+	in       textinput.Model
+	inMode   int
+	inE      *Entry
+	inRow    trow
+	msg      string
+	hint     string
+	help     bool
+	gPending bool
+	search   string
+}
+
+var (
+	stSel   = lipgloss.NewStyle().Reverse(true)
+	stDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	stHead  = lipgloss.NewStyle().Bold(true)
+	stToday = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
+	stWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	stPlain = lipgloss.NewStyle()
+	tagCols = []string{"4", "5", "2", "1", "6", "3"}
+)
+
+func newModel(files []*File) *model {
+	ti := textinput.New()
+	ti.CharLimit = 0
+	m := &model{files: files, w: 80, h: 24, in: ti, hideDone: true, anchor: day(now())}
+	// 書込先の既定は、繰り返しだけのファイル(曜日など)を飛ばした最初のファイル
+	for j, f := range files {
+		only := len(f.Entries()) > 0
+		for _, e := range f.Entries() {
+			if e.Kind != kRepeat {
+				only = false
+			}
+		}
+		if !only {
+			m.target = j
+			break
+		}
+	}
+	m.build()
+	m.jumpNow()
+	return m
+}
+
+func (m *model) Init() tea.Cmd { return tick() }
+
+type tickMsg struct{}
+
+// tick は次の分の頭で時計を進める。
+func tick() tea.Cmd {
+	n := now()
+	return tea.Tick(n.Truncate(time.Minute).Add(time.Minute).Sub(n), func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+type editedMsg struct{ err error }
+
+// mins は d の0時から t までの分(前日なら負、翌日なら1440超)。
+func mins(t, d time.Time) int { return int(t.Sub(d) / time.Minute) }
+
+func (m *model) all() []*Entry {
+	var es []*Entry
+	for _, f := range m.files {
+		es = append(es, f.Entries()...)
+	}
+	return es
+}
+
+// occsOn は d の予定。終日が先、あとは時刻順。
+func occsOn(es []*Entry, d time.Time) []occ {
+	var os []occ
+	for _, e := range es {
+		if o, ok := e.on(d); ok {
+			os = append(os, o)
+		}
+	}
+	sort.SliceStable(os, func(i, j int) bool {
+		if os[i].timed != os[j].timed {
+			return !os[i].timed
+		}
+		return os[i].at.Before(os[j].at)
+	})
+	return os
+}
+
+func isDone(e *Entry) bool {
+	s := status(e.Text)
+	return s == "完了" || s == "中止"
+}
+
+func (m *model) visible(e *Entry) bool { return !m.hideDone || !isDone(e) }
+
+// ---- 表を組む ----
+
+// window は表に入れる日の範囲。目盛りが粗いほど広く取る。
+func (m *model) window() (time.Time, time.Time) {
+	a := day(m.anchor)
+	switch m.level {
+	case lvMonth:
+		return a.AddDate(-3, 0, 0), a.AddDate(3, 0, 0)
+	case lvYear:
+		return a.AddDate(-10, 0, 0), a.AddDate(10, 0, 0)
+	}
+	return a.AddDate(0, 0, -120), a.AddDate(0, 0, 240)
+}
+
+func (m *model) build() {
+	n := len(m.files)
+	var rows []trow
+	// 未定はいつも一番上
+	undef := make([][]occ, n)
+	nu := 0
+	for j, f := range m.files {
+		for _, e := range f.Entries() {
+			if e.Kind == kUndef && m.visible(e) {
+				undef[j] = append(undef[j], occ{e: e})
+			}
+		}
+		nu = max(nu, len(undef[j]))
+	}
+	for i := 0; i < nu; i++ {
+		r := trow{slot: slotUndef, first: i == 0, cells: make([]cell, n)}
+		for j := range m.files {
+			if i < len(undef[j]) {
+				r.cells[j].os = []occ{undef[j][i]}
+			}
+		}
+		rows = append(rows, r)
+	}
+	from, to := m.window()
+	var group trow // 日・月・年の行をまとめる途中
+	flush := func() {
+		for _, c := range group.cells {
+			if len(c.os) > 0 {
+				rows = append(rows, group)
+				break
+			}
+		}
+		group = trow{}
+	}
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		per := make([][]occ, n)
+		for j, f := range m.files {
+			for _, o := range occsOn(f.Entries(), d) {
+				if m.visible(o.e) {
+					per[j] = append(per[j], o)
+				}
+			}
+		}
+		if m.level != lvTime {
+			key := d
+			switch m.level {
+			case lvMonth:
+				key = time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, time.Local)
+			case lvYear:
+				key = time.Date(d.Year(), 1, 1, 0, 0, 0, 0, time.Local)
+			}
+			if !group.date.Equal(key) {
+				flush()
+				group = trow{date: key, slot: slotAll, first: true, cells: make([]cell, n)}
+			}
+			for j := range per {
+				group.cells[j].os = append(group.cells[j].os, per[j]...)
+			}
+			continue
+		}
+		rows = append(rows, dayRows(d, per)...)
+	}
+	flush()
+	m.rows = rows
+	m.clamp()
+}
+
+// dayRows は「時」の目盛りで1日分の行を作る。細かい方に合わせ、
+// 時刻を持たないファイル(曜日など)の値はその日のどの行にも添える。
+func dayRows(d time.Time, per [][]occ) []trow {
+	n := len(per)
+	timed := make([][]occ, n)
+	allday := make([][]occ, n)
+	keys := map[int]bool{}
+	for j, os := range per {
+		for _, o := range os {
+			if o.timed {
+				timed[j] = append(timed[j], o)
+				keys[mins(o.at, d)] = true
+			} else {
+				allday[j] = append(allday[j], o)
+			}
+		}
+	}
+	// 終日の行が要るのは、時刻も持つファイルに終日の値があるとき、または時刻の行が1つも無いとき
+	nAll := 0
+	for j := range per {
+		if len(allday[j]) > 0 && (len(timed[j]) > 0 || len(keys) == 0) {
+			nAll = max(nAll, len(allday[j]))
+		}
+	}
+	var rows []trow
+	for i := 0; i < nAll; i++ {
+		r := trow{date: d, slot: slotAll, cells: make([]cell, n)}
+		for j := range per {
+			if i < len(allday[j]) {
+				r.cells[j].os = []occ{allday[j][i]}
+			}
+		}
+		rows = append(rows, r)
+	}
+	ks := make([]int, 0, len(keys))
+	for k := range keys {
+		ks = append(ks, k)
+	}
+	sort.Ints(ks)
+	for _, k := range ks {
+		r := trow{date: d, slot: k, cells: make([]cell, n)}
+		for j := range per {
+			for _, o := range timed[j] {
+				if mins(o.at, d) == k {
+					r.cells[j].os = append(r.cells[j].os, o)
+				}
+			}
+			if len(timed[j]) == 0 && len(allday[j]) > 0 {
+				r.cells[j] = cell{os: allday[j], ctx: true}
+			}
+		}
+		rows = append(rows, r)
+	}
+	if len(rows) > 0 {
+		rows[0].first = true
+	}
+	return rows
+}
+
+// ---- 選択 ----
+
+func (m *model) clamp() {
+	if m.sel >= len(m.rows) {
+		m.sel = len(m.rows) - 1
+	}
+	if m.sel < 0 {
+		m.sel = 0
+	}
+}
+
+func (m *model) curRow() (trow, bool) {
+	if m.sel < 0 || m.sel >= len(m.rows) {
+		return trow{date: day(now()), slot: slotAll}, false
+	}
+	return m.rows[m.sel], true
+}
+
+// curEntry は選んでいるマスの予定(1件だけのとき)。
+func (m *model) curEntry() (*Entry, string) {
+	r, ok := m.curRow()
+	if !ok || m.target >= len(r.cells) {
+		return nil, "予定が無い"
+	}
+	c := r.cells[m.target]
+	switch {
+	case len(c.os) == 0:
+		return nil, "このマスは空"
+	case c.ctx:
+		return nil, "この値は日付の行で選んで"
+	case len(c.os) > 1:
+		return nil, "このマスは複数あるので「時」の目盛りで選んで"
+	}
+	return c.os[0].e, ""
+}
+
+func (m *model) rowTime(r trow) time.Time {
+	if r.slot >= 0 {
+		return r.date.Add(time.Duration(r.slot) * time.Minute)
+	}
+	return r.date
+}
+
+// rowEnd は行の受け持つ期間の終わり。時刻の行は、その時刻に始まる予定の終わりまで。
+func (m *model) rowEnd(r trow) time.Time {
+	switch {
+	case m.level == lvMonth:
+		return r.date.AddDate(0, 1, 0)
+	case m.level == lvYear:
+		return r.date.AddDate(1, 0, 0)
+	case m.level == lvTime && r.slot >= 0:
+		end := m.rowTime(r).Add(time.Minute)
+		for _, c := range r.cells {
+			for _, o := range c.os {
+				if o.timed && o.end.After(end) {
+					end = o.end
+				}
+			}
+		}
+		return end
+	}
+	return r.date.AddDate(0, 0, 1)
+}
+
+// seek は t を含むか t より後の最初の行を選ぶ(未定の行は飛ばす)。
+func (m *model) seek(t time.Time) {
+	for i, r := range m.rows {
+		if r.slot != slotUndef && m.rowEnd(r).After(t) {
+			m.sel = i
+			return
+		}
+	}
+	m.sel = len(m.rows) - 1
+}
+
+// jumpNow は今日へ。時の目盛りなら、今かかっているかこれからの予定の行へ。
+func (m *model) jumpNow() {
+	m.anchor = day(now())
+	m.build()
+	n := now()
+	m.seek(day(n))
+	if m.level == lvTime {
+		for i := m.sel; i < len(m.rows) && m.rows[i].date.Equal(day(n)); i++ {
+			if r := m.rows[i]; r.slot >= 0 && m.rowEnd(r).After(n) {
+				m.sel = i
+				break
+			}
+		}
+	}
+	m.off = max(0, m.sel-3)
+}
+
+// reanchor は表の端に近づいたら範囲を選択中の日へ寄せて組み直す。
+func (m *model) reanchor() {
+	if len(m.rows) == 0 {
+		return
+	}
+	r := m.rows[m.sel]
+	if r.slot == slotUndef || (m.sel > 3 && m.sel < len(m.rows)-4) {
+		return
+	}
+	from, to := m.window()
+	if (m.sel <= 3 && r.date.Before(from.AddDate(0, 0, 3))) || m.sel >= len(m.rows)-4 && !r.date.Before(to.AddDate(0, 0, -3)) {
+		t := m.rowTime(r)
+		m.anchor = r.date
+		m.build()
+		m.seek(t)
+	}
+}
+
+// focus は e のある行と列を選ぶ。
+func (m *model) focus(e *Entry) {
+	for j, f := range m.files {
+		if f == e.file {
+			m.target = j
+		}
+	}
+	find := func() bool {
+		for i, r := range m.rows {
+			for _, o := range r.cells[m.target].os {
+				if o.e == e && !r.cells[m.target].ctx {
+					m.sel = i
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if find() {
+		return
+	}
+	if e.Kind == kDate || e.Kind == kTime {
+		m.anchor = day(e.At)
+		m.build()
+		find()
+	}
+}
+
+func (m *model) setLevel(lv int) {
+	if lv < lvTime || lv > lvYear || lv == m.level {
+		return
+	}
+	r, _ := m.curRow()
+	t := m.rowTime(r)
+	m.level = lv
+	m.anchor = r.date
+	if r.date.IsZero() {
+		m.anchor = day(now())
+	}
+	m.build()
+	if r.slot == slotUndef {
+		m.sel = 0
+	} else {
+		m.seek(t)
+	}
+}
+
+// ---- 書き込み ----
+
+func (m *model) startInput(mode int, prompt, val string) {
+	m.inMode = mode
+	m.in.Prompt = prompt
+	m.in.SetValue(val)
+	m.in.CursorEnd()
+	m.in.Focus()
+	m.msg, m.hint = "", ""
+}
+
+// commit は変更したファイルを書く。失敗したら読み直してメモリ側を捨てる。
+func (m *model) commit(f *File) {
+	if err := save(f); err != nil {
+		if nf, lerr := load(f.Path); lerr == nil {
+			for i, of := range m.files {
+				if of == f {
+					m.files[i] = nf
+				}
+			}
+		}
+		if err == errChanged {
+			m.msg = f.Name() + " が外部で変更されていたので読み直した。もう一度どうぞ"
+		} else {
+			m.msg = "保存失敗: " + err.Error()
+		}
+	}
+	m.build()
+}
+
+func (m *model) reload() {
+	for i, f := range m.files {
+		if nf, err := load(f.Path); err == nil {
+			m.files[i] = nf
+		} else {
+			m.msg = err.Error()
+		}
+	}
+	m.build()
+}
+
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		return m, tick()
+	case editedMsg:
+		m.reload()
+		if msg.err != nil {
+			m.msg = "エディタ: " + msg.err.Error()
+		}
+		return m, nil
+	case tea.WindowSizeMsg:
+		m.w, m.h = msg.Width, msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		if m.inMode != inNone {
+			return m.updateInput(msg)
+		}
+		return m.updateKey(msg)
+	}
+	return m, nil
+}
+
+func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.inMode == inDelete {
+		if k.String() == "y" {
+			f := m.inE.file
+			f.remove(m.inE)
+			m.commit(f)
+		}
+		m.inMode = inNone
+		return m, nil
+	}
+	switch k.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.inMode = inNone
+		m.in.Blur()
+		return m, nil
+	case tea.KeyEnter:
+		val := strings.TrimSpace(m.in.Value())
+		switch m.inMode {
+		case inQuick, inSlot:
+			if val == "" {
+				break
+			}
+			f := m.files[m.target]
+			e := &Entry{Text: val, file: f}
+			if m.inMode == inSlot {
+				r := m.inRow
+				switch {
+				case r.slot >= 0:
+					e.setRaw(formatWhen(m.rowTime(r), kTime))
+				case r.slot == slotAll:
+					e.setRaw(formatWhen(r.date, kDate))
+				}
+			}
+			if o, bad := e.clash(f); bad {
+				m.msg = clashMsg(o).Error()
+				return m, nil
+			}
+			f.add(e)
+			m.commit(f)
+			m.focus(e)
+			if e.Kind == kUndef {
+				m.msg = "未定に追加: " + val
+			}
+		case inText:
+			if val == "" {
+				break
+			}
+			m.inE.Text, m.inE.src = val, ""
+			m.commit(m.inE.file)
+			m.focus(m.inE)
+		case inMemo:
+			m.inE.Memo, m.inE.src = val, ""
+			m.commit(m.inE.file)
+			m.focus(m.inE)
+		case inWhen:
+			base := m.anchor
+			if m.inE.Kind == kDate || m.inE.Kind == kTime {
+				base = m.inE.At
+			}
+			raw, err := parseInput(val, base)
+			if err != nil {
+				m.msg = err.Error()
+				return m, nil
+			}
+			oldRaw, oldSrc := m.inE.Raw, m.inE.src
+			m.inE.setRaw(raw)
+			if o, bad := m.inE.clash(m.inE.file); bad {
+				m.inE.setRaw(oldRaw)
+				m.inE.src = oldSrc
+				m.msg = clashMsg(o).Error()
+				return m, nil
+			}
+			m.commit(m.inE.file)
+			m.focus(m.inE)
+		case inSearch:
+			m.search = val
+			m.findNext(1)
+		}
+		m.inMode = inNone
+		m.in.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.in, cmd = m.in.Update(k)
+	return m, cmd
+}
+
+func (m *model) rowText(r trow) string {
+	var b strings.Builder
+	for _, c := range r.cells {
+		for _, o := range c.os {
+			b.WriteString(o.e.Text + " " + o.e.Memo + "\n")
+		}
+	}
+	return strings.ToLower(b.String())
+}
+
+func (m *model) findNext(dir int) {
+	if m.search == "" {
+		return
+	}
+	q := strings.ToLower(m.search)
+	for i := 1; i <= len(m.rows); i++ {
+		j := ((m.sel+dir*i)%len(m.rows) + len(m.rows)) % len(m.rows)
+		if strings.Contains(m.rowText(m.rows[j]), q) {
+			m.sel = j
+			return
+		}
+	}
+	m.msg = "見つからない: " + m.search
+}
+
+func (m *model) bodyH() int {
+	h := m.h - 4 // 見出し・列名・状態・操作ヒント
+	if m.inMode != inNone && m.inMode != inDelete && (m.msg != "" || m.hint != "") {
+		h--
+	}
+	return max(1, h)
+}
+
+func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.msg = ""
+	key := k.String()
+	if m.gPending {
+		m.gPending = false
+		if key == "g" {
+			m.sel = 0
+			return m, nil
+		}
+	}
+	switch key {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "?":
+		m.help = !m.help
+	case "g":
+		m.gPending = true
+	case "G":
+		m.sel = len(m.rows) - 1
+	case "j", "down":
+		m.sel++
+	case "k", "up":
+		m.sel--
+	case "ctrl+d", "pgdown":
+		m.sel += m.bodyH() / 2
+	case "ctrl+u", "pgup":
+		m.sel -= m.bodyH() / 2
+	case "h", "left":
+		m.target = (m.target + len(m.files) - 1) % len(m.files)
+	case "l", "right", "tab":
+		m.target = (m.target + 1) % len(m.files)
+	case "+", "=", "enter":
+		m.setLevel(m.level - 1)
+	case "-", "backspace":
+		m.setLevel(m.level + 1)
+	case "t":
+		m.jumpNow()
+	case "v":
+		m.hideDone = !m.hideDone
+		r, _ := m.curRow()
+		m.build()
+		m.seek(m.rowTime(r))
+		if m.hideDone {
+			m.msg = "完了・中止を隠した"
+		} else {
+			m.msg = "完了・中止も出した"
+		}
+	case "r":
+		m.reload()
+		m.msg = "再読込した"
+	case "/":
+		m.startInput(inSearch, "/", m.search)
+	case "n":
+		m.findNext(1)
+	case "N":
+		m.findNext(-1)
+	case "a":
+		m.startInput(inQuick, "メモ(日時は後で)> ", "")
+	case "A":
+		r, _ := m.curRow()
+		if m.level >= lvMonth {
+			m.msg = "日か時の目盛りで"
+			break
+		}
+		m.inRow = r
+		at := "未定"
+		switch {
+		case r.slot >= 0:
+			at = formatWhen(m.rowTime(r), kTime)
+		case r.slot == slotAll:
+			at = formatWhen(r.date, kDate)
+		}
+		m.startInput(inSlot, at+" > ", "")
+	case "e", "m", "s", "x":
+		e, why := m.curEntry()
+		if e == nil {
+			m.msg = why
+			break
+		}
+		m.inE = e
+		switch key {
+		case "e":
+			m.startInput(inText, "内容> ", e.Text)
+		case "m":
+			m.startInput(inMemo, "メモ欄> ", e.Memo)
+		case "s":
+			m.startInput(inWhen, "日時> ", e.Raw)
+			m.hint = "例 10/25 14:00-15:00・14:00・+3・*/12/25・w=日 10:00・空=未定"
+		case "x":
+			m.inMode = inDelete
+		}
+	case "E":
+		f := m.files[m.target]
+		args := editorCmd()
+		if e, _ := m.curEntry(); e != nil {
+			f = e.file
+			if e.line > 0 {
+				args = append(args, "+"+strconv.Itoa(e.line))
+			}
+		}
+		c := exec.Command(args[0], append(args[1:], f.Path)...)
+		return m, tea.ExecProcess(c, func(err error) tea.Msg { return editedMsg{err} })
+	}
+	m.clamp()
+	m.reanchor()
+	return m, nil
+}
+
+func editorCmd() []string {
+	ed := os.Getenv("VISUAL")
+	if ed == "" {
+		ed = os.Getenv("EDITOR")
+	}
+	if ed == "" {
+		ed = "vi"
+	}
+	return strings.Fields(ed)
+}
+
+// ---- 描画 ----
+
+type seg struct {
+	s  string
+	st lipgloss.Style
+}
+
+// line は幅に収めて描く。選択行は全体を反転する。
+func line(segs []seg, w int, selected bool) string {
+	var b strings.Builder
+	left := w
+	plain := ""
+	for _, s := range segs {
+		if left <= 0 {
+			break
+		}
+		t := s.s
+		if runewidth.StringWidth(t) > left {
+			t = runewidth.Truncate(t, left, "…")
+		}
+		left -= runewidth.StringWidth(t)
+		plain += t
+		b.WriteString(s.st.Render(t))
+	}
+	if selected {
+		return stSel.Render(plain + strings.Repeat(" ", max(0, left)))
+	}
+	return b.String()
+}
+
+func fit(s string, w int) string {
+	return runewidth.FillRight(runewidth.Truncate(s, w, "…"), w)
+}
+
+func dateLabel(d time.Time) string { return d.Format("2006-01-02") }
+
+func (m *model) label(r trow) string {
+	switch {
+	case r.slot == slotUndef:
+		if r.first {
+			return "未定"
+		}
+		return ""
+	case m.level == lvMonth:
+		return r.date.Format("2006-01")
+	case m.level == lvYear:
+		return r.date.Format("2006")
+	case m.level == lvDay:
+		return dateLabel(r.date)
+	}
+	d := "          "
+	if r.first {
+		d = dateLabel(r.date)
+	}
+	if r.slot >= 0 {
+		return fmt.Sprintf("%s %02d:%02d", d, r.slot/60, r.slot%60)
+	}
+	return d
+}
+
+func (m *model) labelW() int {
+	switch m.level {
+	case lvTime:
+		return 17
+	case lvDay:
+		return 11
+	case lvMonth:
+		return 8
+	}
+	return 5
+}
+
+// occText はマスに書く1件分。
+func (m *model) occText(o occ, withTime bool) string {
+	e := o.e
+	t := strings.ReplaceAll(e.textOn(day(o.at)), "\n", "⏎")
+	if o.timed {
+		if withTime {
+			t = o.at.Format("15:04") + " " + t
+		}
+		if !o.end.IsZero() {
+			t += " 〜" + o.end.Format("15:04")
+		}
+		if overdue(o) {
+			t = "LATE " + t
+		}
+		if _, bad := e.clashOn(e.file, day(o.at)); bad {
+			t = "!" + t
+		}
+	}
+	if e.Memo != "" {
+		t += " *"
+	}
+	return t
+}
+
+func (m *model) cellText(c cell) string {
+	var ps []string
+	seen := map[string]bool{}
+	for _, o := range c.os {
+		t := m.occText(o, m.level == lvDay)
+		if m.level >= lvMonth {
+			// 月・年では同じ内容(曜日など)を1つにまとめ、件数を前に出す
+			t = strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎")
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+		}
+		ps = append(ps, t)
+	}
+	s := strings.Join(ps, " / ")
+	if m.level >= lvMonth && len(c.os) > 1 {
+		s = fmt.Sprintf("%d件 %s", len(c.os), s)
+	}
+	return s
+}
+
+func (m *model) View() string {
+	lw := m.labelW()
+	n := len(m.files)
+	cw := max(4, (m.w-lw)/n)
+	bodyH := m.bodyH()
+
+	done := "完了を隠す"
+	if !m.hideDone {
+		done = "完了も出す"
+	}
+	var lvs []seg
+	for i, nm := range lvNames {
+		st := stDim
+		if i == m.level {
+			st = stHead
+		}
+		lvs = append(lvs, seg{" " + nm, st})
+	}
+	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
+		seg{"  " + done, stDim}, seg{"  " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
+
+	hdr := strings.Repeat(" ", lw)
+	for j, f := range m.files {
+		st := stDim
+		if j == m.target {
+			st = stHead.Underline(true)
+		}
+		hdr += st.Render(fit(f.Name(), cw-1)) + " "
+	}
+
+	if m.sel < m.off {
+		m.off = m.sel
+	}
+	if m.sel >= m.off+bodyH {
+		m.off = m.sel - bodyH + 1
+	}
+	today := day(now())
+	var body []string
+	if len(m.rows) == 0 {
+		body = []string{stDim.Render(" (予定なし)  a でメモ、A でここに追加")}
+	}
+	for i := m.off; i < len(m.rows) && i < m.off+bodyH; i++ {
+		r := m.rows[i]
+		lst := stDim
+		if r.first {
+			lst = stPlain
+		}
+		if r.slot != slotUndef && r.date.Equal(today) && m.level <= lvDay {
+			lst = stToday
+		}
+		var b strings.Builder
+		b.WriteString(lst.Render(fit(m.label(r), lw)))
+		for j, c := range r.cells {
+			st := stPlain
+			if c.ctx {
+				st = stDim
+			}
+			txt := m.cellText(c)
+			if strings.HasPrefix(txt, "!") || strings.HasPrefix(txt, "LATE") {
+				st = stWarn
+			}
+			if i == m.sel && j == m.target {
+				st = stSel
+			}
+			b.WriteString(st.Render(fit(txt, cw-1)) + " ")
+		}
+		body = append(body, b.String())
+	}
+	for len(body) < bodyH {
+		body = append(body, "")
+	}
+	return title + "\n" + hdr + "\n" + strings.Join(body[:bodyH], "\n") + "\n" + m.footer()
+}
+
+func (m *model) status() string {
+	e, _ := m.curEntry()
+	if e == nil {
+		r, ok := m.curRow()
+		if !ok {
+			return ""
+		}
+		return m.files[m.target].Name() + "  " + strings.TrimSpace(m.label(r))
+	}
+	s := e.file.Name() + "  " + e.Raw
+	if e.Raw == "" {
+		s += "(未定)"
+	}
+	s += "  " + strings.ReplaceAll(e.Text, "\n", "⏎")
+	if e.Memo != "" {
+		s += "  | メモ: " + strings.ReplaceAll(e.Memo, "\n", "⏎")
+	}
+	return s
+}
+
+const hintShort = "j/k 移動 h/l 列 +/- 時日月年 t 今 a メモ A ここに追加 e 内容 m メモ欄 s 日時 x 削除 E エディタ v 完了 / 検索 ? 全部 q 終了"
+
+const hintFull = "j/k ↓↑  gg/G 先頭/末尾  C-d/C-u 半画面  h/l(Tab) 列 = 書込先  +/Enter 細かく  -/BS 粗く  t 今へ  " +
+	"a 未定メモ  A 選んだ日時に追加  e 内容  m メモ欄  s 日時  x 削除  E エディタでその行  v 完了・中止の表示  / 検索 n/N  r 再読込  q 終了"
+
+func (m *model) footer() string {
+	hint := hintShort
+	if m.help {
+		hint = hintFull
+	}
+	hints := line([]seg{{hint, stDim}}, m.w, false)
+	switch m.inMode {
+	case inDelete:
+		return stWarn.Render(runewidth.Truncate("削除? (y/N) "+m.inE.Text, m.w, "…")) + "\n" + hints
+	case inNone:
+	default:
+		m.in.Width = max(10, m.w-runewidth.StringWidth(m.in.Prompt)-1)
+		top := ""
+		if m.msg != "" {
+			top = line([]seg{{m.msg, stWarn}}, m.w, false) + "\n"
+		} else if m.hint != "" {
+			top = line([]seg{{m.hint, stDim}}, m.w, false) + "\n"
+		}
+		return top + m.in.View() + "\n" + line([]seg{{"Enter 決定  Esc やめる", stDim}}, m.w, false)
+	}
+	if m.msg != "" {
+		return line([]seg{{m.msg, stWarn}}, m.w, false) + "\n" + hints
+	}
+	return line([]seg{{m.status(), stPlain}}, m.w, false) + "\n" + hints
+}

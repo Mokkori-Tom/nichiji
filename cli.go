@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -31,7 +32,38 @@ func setNow(s string) error {
 	return nil
 }
 
-var dayWords = map[int]string{-1: "昨日", 0: "今日", 1: "明日", 2: "明後日"}
+// listSegs は ls の1件。印(! / LATE)は grep できるよう英字のまま本文の前に置く。
+func (m *model) listSegs(o occ) []seg {
+	e := o.e
+	when := "未定"
+	switch {
+	case e.Kind == kUndef && e.Raw != "":
+		when = "?" + e.Raw
+	case o.timed && !o.end.IsZero():
+		when = o.at.Format("15:04") + "-" + endLabel(o.at, o.end)
+	case o.timed:
+		when = o.at.Format("15:04")
+	case e.Kind != kUndef:
+		when = "終日"
+	}
+	segs := []seg{{"  " + when + " ", stPlain}}
+	if len(m.files) > 1 {
+		segs = append(segs, seg{"[" + e.file.Name() + "] ", stDim})
+	}
+	if o.timed {
+		if _, bad := e.clashOn(e.file, day(o.at)); bad {
+			segs = append(segs, seg{"! ", stWarn})
+		}
+		if overdue(o) {
+			segs = append(segs, seg{"LATE ", stHead})
+		}
+	}
+	segs = append(segs, seg{strings.ReplaceAll(e.textOn(day(o.at)), "\n", "⏎"), stPlain})
+	if e.Memo != "" {
+		segs = append(segs, seg{"  | " + strings.ReplaceAll(e.Memo, "\n", "⏎"), stDim})
+	}
+	return segs
+}
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
 // list は直近を出す。overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
@@ -53,7 +85,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 	n := 0
 	for i := -past; i <= days; i++ {
 		d := today.AddDate(0, 0, i)
-		os := m.occsOn(d)
+		os := occsOn(m.all(), d)
 		if overdueOnly {
 			var od []occ
 			for _, o := range os {
@@ -67,16 +99,13 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 			continue
 		}
 		head := dateLabel(d)
-		if wd, ok := dayWords[i]; ok {
-			head += " " + wd
-		}
 		st := stHead
 		if i == 0 {
 			st = stToday
 		}
 		fmt.Fprintln(w, st.Render(head))
 		for _, o := range os {
-			fmt.Fprintln(w, render(m.entrySegs("  ", occRow(o, d))))
+			fmt.Fprintln(w, render(m.listSegs(o)))
 			n++
 		}
 	}
@@ -101,7 +130,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 	}
 	fmt.Fprintln(w, stHead.Render("未定"))
 	for _, e := range us {
-		fmt.Fprintln(w, render(m.entrySegs("  ", row{e: e, date: today, slot: -1})))
+		fmt.Fprintln(w, render(m.listSegs(occ{e: e})))
 	}
 	return n
 }
@@ -133,9 +162,6 @@ func freeList(w io.Writer, files []*File, days, from, to, length int) {
 			continue
 		}
 		head := dateLabel(d)
-		if wd, ok := dayWords[i]; ok {
-			head += " " + wd
-		}
 		fmt.Fprintln(w, stHead.Render(head))
 		for _, f := range fs {
 			fmt.Fprintf(w, "  %s-%s %s\n", f[0].Format("15:04"), endLabel(f[0], f[1]), stDim.Render("("+durLabel(f[1].Sub(f[0]))+")"))
