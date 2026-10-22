@@ -60,14 +60,19 @@ func (m *model) listSegs(o occ) []seg {
 	}
 	segs = append(segs, seg{strings.ReplaceAll(e.textOn(day(o.at)), "\n", "⏎"), stPlain})
 	if e.Memo != "" {
-		segs = append(segs, seg{"  | " + strings.ReplaceAll(e.Memo, "\n", "⏎"), stDim})
+		// メモ本文は -memo のときだけ。ふだんは印だけにして一覧を崩さない
+		if m.listMemo {
+			segs = append(segs, seg{"  | " + strings.ReplaceAll(e.Memo, "\n", "⏎"), stDim})
+		} else {
+			segs = append(segs, seg{" *", stDim})
+		}
 	}
 	return segs
 }
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
 // list は直近を出す。overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
-func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bool) int {
+func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, memo bool) int {
 	width := 0 // 0 = 切らない(パイプのときは全文を出す)
 	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {
 		if cw, _, err := term.GetSize(fd); err == nil {
@@ -80,7 +85,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly bo
 		}
 		return render(segs)
 	}
-	m := &model{files: files}
+	m := &model{files: files, listMemo: memo}
 	today := day(now())
 	n := 0
 	for i := -past; i <= days; i++ {

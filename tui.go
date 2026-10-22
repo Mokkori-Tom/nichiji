@@ -79,6 +79,9 @@ type model struct {
 	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
 	pickList []occ
 	pickSel  int
+	memoView bool // 選んだ予定の内容とメモを全文で見ている
+	memoOff  int
+	listMemo bool // ls 用: メモ本文も出す
 }
 
 var (
@@ -782,6 +785,17 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.memoView {
+		switch key {
+		case "j", "down":
+			m.memoOff++
+		case "k", "up":
+			m.memoOff = max(0, m.memoOff-1)
+		default:
+			m.memoView = false
+		}
+		return m, nil
+	}
 	if m.pick {
 		switch key {
 		case "esc", "q", "enter", "backspace":
@@ -799,7 +813,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.pickSel = len(m.pickList) - 1
 			return m, nil
-		case "e", "m", "s", "x", "E", "?", "ctrl+c":
+		case "e", "m", "s", "x", "E", "?", "ctrl+c", " ", "i":
 		default:
 			return m, nil
 		}
@@ -829,6 +843,12 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setLevel(m.level - 1)
 	case "enter", "o":
 		m.openPick()
+	case " ", "i":
+		if e, why := m.curEntry(); e == nil {
+			m.msg = why
+		} else {
+			m.memoView, m.memoOff = true, 0
+		}
 	case "-", "backspace":
 		m.setLevel(m.level + 1)
 	case "t":
@@ -1078,12 +1098,14 @@ func (m *model) View() string {
 	}
 	today := day(now())
 	var body []string
-	if m.pick {
+	if m.memoView {
+		body = m.memoBody(bodyH)
+	} else if m.pick {
 		body = m.pickBody(bodyH)
 	} else if len(m.rows) == 0 {
 		body = []string{stDim.Render(" (nothing)  a quick add, A add here")}
 	}
-	for i := m.off; !m.pick && i < len(m.rows) && i < m.off+bodyH; i++ {
+	for i := m.off; !m.pick && !m.memoView && i < len(m.rows) && i < m.off+bodyH; i++ {
 		r := m.rows[i]
 		lst := stDim
 		if r.first {
@@ -1114,6 +1136,57 @@ func (m *model) View() string {
 		body = append(body, "")
 	}
 	return title + "\n" + hdr + "\n" + strings.Join(body[:bodyH], "\n") + "\n" + m.footer()
+}
+
+// wrap は幅に合わせて折り返す(改行はそのまま改行)。
+func wrap(s string, w int) []string {
+	var out []string
+	for _, para := range strings.Split(s, "\n") {
+		cur, cw := "", 0
+		for _, r := range para {
+			rw := runewidth.RuneWidth(r)
+			if cw+rw > w {
+				out = append(out, cur)
+				cur, cw = "", 0
+			}
+			cur += string(r)
+			cw += rw
+		}
+		out = append(out, cur)
+	}
+	return out
+}
+
+// memoBody は選んだ予定の日時・内容・メモを全文で出す。
+func (m *model) memoBody(bodyH int) []string {
+	e, _ := m.curEntry()
+	if e == nil {
+		return nil
+	}
+	when := e.Raw
+	if when == "" {
+		when = "undated"
+	}
+	w := max(10, m.w-2)
+	out := []string{line([]seg{{" " + e.file.Name() + "  " + when, stHead}}, m.w, false)}
+	for _, l := range wrap(e.Text, w) {
+		out = append(out, " "+l)
+	}
+	out = append(out, "")
+	if e.Memo == "" {
+		out = append(out, stDim.Render(" (no memo)  m to write one"))
+	} else {
+		for _, l := range wrap(e.Memo, w) {
+			out = append(out, " "+l)
+		}
+	}
+	off := min(m.memoOff, max(0, len(out)-bodyH))
+	m.memoOff = off
+	out = out[off:]
+	if len(out) > bodyH {
+		out = out[:bodyH]
+	}
+	return out
 }
 
 // pickBody は開いたマスの中身を1件1行で並べる。
@@ -1156,10 +1229,10 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l column +/- scale Enter open t now a quick A add e text m memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l column +/- scale Enter open Space memo t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"a quick add  A add at row  e text  m memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort

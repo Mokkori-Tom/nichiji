@@ -12,7 +12,7 @@ import (
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
 
   nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
-  nichiji ls [-days 14] [-past 0] [-u] [FILE ...]  list upcoming entries
+  nichiji ls [-days 14] [-past 0] [-u] [-memo] [FILE ...]  list upcoming entries (* = has a memo)
   nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
   nichiji check [FILE ...]                     report unreadable dates, overlaps and LATE entries; exit 1 if any
   nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
@@ -62,6 +62,7 @@ func main() {
 	fs.BoolVar(&so.force, "force", false, "set: write even if it overlaps")
 	full := fs.Bool("full", false, "ls: do not cut lines to the terminal width")
 	od := fs.Bool("overdue", false, "ls: only LATE entries; exit 1 if any")
+	lmemo := fs.Bool("memo", false, "ls: show memos (default: only a * mark)")
 	before := fs.Int("before", 10, "notify: minutes before start")
 	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / terminal)")
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
@@ -164,12 +165,12 @@ func main() {
 			if p == 0 {
 				p = 30
 			}
-			if list(os.Stdout, files, p, 0, false, !*full, true) > 0 {
+			if list(os.Stdout, files, p, 0, false, !*full, true, *lmemo) > 0 {
 				os.Exit(1)
 			}
 			return
 		}
-		list(os.Stdout, files, *past, *days, *undef, !*full, false)
+		list(os.Stdout, files, *past, *days, *undef, !*full, false, *lmemo)
 		return
 	}
 	if sub == "check" {
