@@ -422,6 +422,40 @@ func (m *model) jumpNow() {
 	m.off = max(0, m.sel-3)
 }
 
+// jumpEdge は一番古い(last なら一番新しい)日付つきの予定へ飛ぶ。
+// 繰り返しは果てが無いので数えない。未定は gg のあと k で上へ。
+func (m *model) jumpEdge(last bool) {
+	var t time.Time
+	for _, e := range m.all() {
+		if (e.Kind != kDate && e.Kind != kTime) || !m.visible(e) {
+			continue
+		}
+		if t.IsZero() || (last && e.At.After(t)) || (!last && e.At.Before(t)) {
+			t = e.At
+		}
+	}
+	if t.IsZero() {
+		if last {
+			m.sel = len(m.rows) - 1
+		} else {
+			m.sel = 0
+		}
+		return
+	}
+	m.anchor = day(t)
+	m.build()
+	m.seek(t)
+	if m.level == lvTime {
+		// その時刻の行まで進める(終日の行で止まらないように)
+		for i := m.sel; i < len(m.rows) && m.rows[i].date.Equal(day(t)); i++ {
+			if r := m.rows[i]; m.rowTime(r).Equal(t) {
+				m.sel = i
+				break
+			}
+		}
+	}
+}
+
 // reanchor は表の端に近づいたら範囲を選択中の日へ寄せて組み直す。
 func (m *model) reanchor() {
 	if len(m.rows) == 0 {
@@ -682,7 +716,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.gPending {
 		m.gPending = false
 		if key == "g" {
-			m.sel = 0
+			m.jumpEdge(false)
 			return m, nil
 		}
 	}
@@ -716,7 +750,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.gPending = true
 	case "G":
-		m.sel = len(m.rows) - 1
+		m.jumpEdge(true)
 	case "j", "down":
 		m.sel++
 	case "k", "up":
@@ -1055,7 +1089,7 @@ func (m *model) status() string {
 
 const hintShort = "j/k move h/l column +/- scale Enter open t now a quick A add e text m memo s when x del E editor v done / find ? help q quit"
 
-const hintFull = "j/k down/up  gg/G top/bottom  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
+const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
 	"a quick add  A add at row  e text  m memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {

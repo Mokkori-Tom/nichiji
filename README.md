@@ -61,7 +61,7 @@ j/k move h/l column +/- scale Enter open t now a quick A add e text m memo …
 
 | キー | 動作 |
 |---|---|
-| `j` `k` / `gg` `G` / `C-d` `C-u` | 下・上 / 先頭・末尾 / 半画面 |
+| `j` `k` / `gg` `G` / `C-d` `C-u` | 下・上 / 一番古い・新しい日付つきの予定(繰り返しは数えない) / 半画面。表は今の前後を読み、端まで行くと自動で先を読む |
 | `h` `l`(Tab) | 列を移る。選んでいる列が書込先 |
 | `+` / `-` BS | 目盛りを細かく / 粗く(hour・day・month・year) |
 | Enter (`o`) | マスを開いて中の予定を1件ずつ選ぶ(Esc で閉じる) |
