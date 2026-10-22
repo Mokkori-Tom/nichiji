@@ -300,8 +300,27 @@ func dayRows(d time.Time, per, ends [][]occ, ctxFile []bool) []trow {
 			}
 		}
 	}
+	// 終わりの行は、日付をまたいだときか、始まりと終わりの間に別の予定が始まるときだけ出す
+	// (間に何も無ければ、始まりの行の「〜10:30」で足りる)
+	starts := map[int]bool{}
+	for k := range keys {
+		starts[k] = true
+	}
 	for j := range ends {
+		var keep []occ
 		for _, o := range ends[j] {
+			need := !day(o.at).Equal(d)
+			for k := range starts {
+				if k > mins(o.at, d) && k < mins(o.end, d) {
+					need = true
+				}
+			}
+			if need {
+				keep = append(keep, o)
+			}
+		}
+		ends[j] = keep
+		for _, o := range keep {
 			any = any || !ctxFile[j]
 			keys[mins(o.end, d)] = true
 		}
@@ -1041,6 +1060,11 @@ func line(segs []seg, w int, selected bool) string {
 	return b.String()
 }
 
+// hline は幅 w ぶんの線。罫線は環境によって幅が1にも2にもなるので、その幅で割る。
+func hline(ch string, w int) string {
+	return strings.Repeat(ch, max(0, w/max(1, runewidth.StringWidth(ch))))
+}
+
 func fit(s string, w int) string {
 	return runewidth.FillRight(runewidth.Truncate(s, w, "…"), w)
 }
@@ -1273,6 +1297,19 @@ func (m *model) View() string {
 		if r.slot != slotUndef && r.date.Equal(today) && m.level <= lvDay {
 			lst = stToday
 		}
+		if r.slot == slotMonth || r.slot == slotYear {
+			// 月(年)の見出しは太い線で区切る
+			lab := m.label(r) + " "
+			body = append(body, stHead.Render(lab+hline("━", m.w-runewidth.StringWidth(lab))))
+			continue
+		}
+		dayRow := m.level == lvTime && r.slot == slotAll && r.first
+		if dayRow || (m.level == lvDay && r.slot == slotAll) {
+			lst = stHead
+			if r.date.Equal(today) {
+				lst = stToday
+			}
+		}
 		var b strings.Builder
 		b.WriteString(lst.Render(fit(m.label(r), lw)))
 		for j, c := range r.cells {
@@ -1283,6 +1320,10 @@ func (m *model) View() string {
 			txt := m.cellText(c)
 			if strings.HasPrefix(txt, "!") || strings.HasPrefix(txt, "LATE") {
 				st = stWarn
+			}
+			if dayRow && txt == "" {
+				// 日の行の空いたマスには細い線を引いて、日の境目を見せる
+				txt, st = hline("─", cws[j]-1), stDim
 			}
 			if i == m.sel && j == m.target {
 				st = stSel
