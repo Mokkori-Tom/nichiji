@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 )
 
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
@@ -35,6 +36,9 @@ default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
 `
 
 func main() {
+	// 罫線(─ │ ┌)や … は、日本語の設定だと幅2と数えられるが、端末(Termux・tmux)は幅1で描くことが多い。
+	// ずれると列が崩れるので幅1に揃える。幅2で描く端末なら NICHIJI_AMBIGUOUS_WIDE=1。
+	runewidth.DefaultCondition.EastAsianWidth = os.Getenv("NICHIJI_AMBIGUOUS_WIDE") == "1"
 	sub := ""
 	args := os.Args[1:]
 	if len(args) > 0 && strings.Contains(" add ls free set done find notify check ", " "+args[0]+" ") {
