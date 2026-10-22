@@ -1188,7 +1188,7 @@ func (m *model) cellText(c cell) string {
 		return "│"
 	}
 	for _, o := range c.os {
-		t := m.occText(o, m.level == lvDay)
+		t := m.occText(o, false) // 日の目盛りでも時刻は書かない(選べば下の行に出る)
 		if m.level == lvTime && o.timed {
 			// 予定ひとつを ┌ … └ でくくって、どこからどこまでかを見せる
 			if !o.end.IsZero() {
@@ -1209,12 +1209,7 @@ func (m *model) cellText(c cell) string {
 	}
 	for _, o := range c.ends {
 		t := strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎")
-		if m.level == lvDay {
-			t = endLabel(o.at, o.end) + " " + t + " end" // 日の目盛りには括弧が無いので end と書く
-		}
-		if m.level == lvTime {
-			t = "└" + t
-		}
+		t = "└" + t // 日の目盛りでは、日付をまたいで続いてきたもの
 		ps = append(ps, t)
 	}
 	s := strings.Join(ps, " / ")
