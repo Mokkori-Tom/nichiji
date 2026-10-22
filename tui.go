@@ -1163,7 +1163,7 @@ func (m *model) occText(o occ, withTime bool) string {
 		if withTime {
 			t = o.at.Format("15:04") + " " + t
 		}
-		if !o.end.IsZero() {
+		if !o.end.IsZero() && m.level != lvTime { // 時の目盛りでは └… end の行が終わりを示す
 			t += " 〜" + endLabel(o.at, o.end)
 		}
 		if overdue(o) {
