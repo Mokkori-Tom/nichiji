@@ -288,7 +288,7 @@ func (m *model) build() {
 		rows = append(rows, dayRows(d, per, ends, m.ctxFile)...)
 	}
 	flush()
-	m.rows = m.withHeaders(rows)
+	m.rows = rows
 	m.clamp()
 }
 
@@ -418,34 +418,6 @@ func splitDay(g trow) []trow {
 }
 
 func isHdr(r trow) bool { return r.slot == slotYear || r.slot == slotMonth }
-
-// withHeaders は年・月が変わるところに見出しの行を挟む(階層表示)。
-func (m *model) withHeaders(rows []trow) []trow {
-	if m.level == lvYear {
-		return rows
-	}
-	n := len(m.files)
-	var out []trow
-	lastY, lastM := -1, -1
-	for _, r := range rows {
-		if r.slot == slotUndef {
-			out = append(out, r)
-			continue
-		}
-		y, mo := r.date.Year(), int(r.date.Month())
-		// 時・日の目盛りでは「2026-10」の見出しだけ(年は月の見出しに含める)、月の目盛りでは年の見出し
-		if m.level == lvMonth && y != lastY {
-			out = append(out, trow{date: time.Date(y, 1, 1, 0, 0, 0, 0, time.Local), slot: slotYear, cells: make([]cell, n)})
-			lastY = y
-		}
-		if m.level <= lvDay && (y != lastY || mo != lastM) {
-			out = append(out, trow{date: time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, time.Local), slot: slotMonth, cells: make([]cell, n)})
-			lastY, lastM = y, mo
-		}
-		out = append(out, r)
-	}
-	return out
-}
 
 // skipHdr は見出しの行に止まらないよう dir の向きへずらす。
 func (m *model) skipHdr(dir int) {
@@ -1137,8 +1109,8 @@ func fit(s string, w int) string {
 
 func dateLabel(d time.Time) string { return d.Format("2006-01-02") }
 
-// label は左の欄。月(月の目盛りでは年)は見出しの行に1回だけ書き、
-// その下は日だけ、時刻は2文字下げる(khal / gcalcli のアジェンダ風)。
+// label は左の欄。日の行は年月日(月・年の目盛りでは年月・年)、時刻は2文字下げる(khal / gcalcli のアジェンダ風)。
+// 同じ日の2件目以降は空ける。
 func (m *model) label(r trow) string {
 	switch {
 	case r.slot == slotUndef:
@@ -1150,27 +1122,16 @@ func (m *model) label(r trow) string {
 		return r.date.Format("2006")
 	case r.slot == slotMonth:
 		return r.date.Format("2006-01")
+	case !r.first && r.slot < 0:
+		return "" // 同じ日(月・年)の2件目以降
 	case m.level == lvYear:
-		if r.first {
-			return r.date.Format("2006")
-		}
-		return ""
+		return r.date.Format("2006")
 	case m.level == lvMonth:
-		if r.first {
-			return r.date.Format("01")
-		}
-		return ""
-	case m.level == lvDay:
-		if r.first {
-			return r.date.Format("02")
-		}
-		return ""
+		return r.date.Format("2006-01")
 	case r.slot >= 0:
 		return fmt.Sprintf("  %02d:%02d", r.slot/60, r.slot%60)
-	case r.first:
-		return r.date.Format("02")
 	}
-	return ""
+	return dateLabel(r.date) // 日の行は年月日で書く(月の見出しの行は置かない)
 }
 
 // fullLabel は状態の行などに出す、省かない日時。
