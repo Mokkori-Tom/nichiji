@@ -81,7 +81,7 @@ type model struct {
 	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
 	pickList []occ
 	pickSel  int
-	ctxFile  []bool // 繰り返しだけのファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	ctxFile  []bool // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
 	memoView bool   // 選んだ予定の内容とメモを全文で見ている
 	memoOff  int
 	listMemo bool // ls 用: メモ本文も出す
@@ -101,15 +101,9 @@ func newModel(files []*File) *model {
 	ti := textinput.New()
 	ti.CharLimit = 0
 	m := &model{files: files, w: 80, h: 24, in: ti, hideDone: true, anchor: day(now())}
-	// 書込先の既定は、繰り返しだけのファイル(曜日など)を飛ばした最初のファイル
+	// 書込先の既定は、label のファイル(曜日など)を飛ばした最初のファイル
 	for j, f := range files {
-		only := len(f.Entries()) > 0
-		for _, e := range f.Entries() {
-			if e.Kind != kRepeat {
-				only = false
-			}
-		}
-		if !only {
+		if !f.Label {
 			m.target = j
 			break
 		}
@@ -180,19 +174,14 @@ func (m *model) window() (time.Time, time.Time) {
 	return a.AddDate(0, 0, -120), a.AddDate(0, 0, 240)
 }
 
-// markCtx は繰り返しだけのファイルに印を付ける。全部がそうなら、どれにも付けない。
+// markCtx は「# nichiji: label」のファイルに印を付ける。全部がそうなら、どれにも付けない。
+// (中身から推測しない: 繰り返しの予定だけを持つ人のファイルも、普通に行を作る)
 func (m *model) markCtx() {
 	m.ctxFile = make([]bool, len(m.files))
 	all := true
 	for j, f := range m.files {
-		es := f.Entries()
-		m.ctxFile[j] = len(es) > 0
-		for _, e := range es {
-			if e.Kind != kRepeat {
-				m.ctxFile[j] = false
-			}
-		}
-		all = all && m.ctxFile[j]
+		m.ctxFile[j] = f.Label
+		all = all && f.Label
 	}
 	if all {
 		m.ctxFile = make([]bool, len(m.files))

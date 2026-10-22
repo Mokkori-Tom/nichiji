@@ -48,6 +48,13 @@ type File struct {
 	Path  string
 	Items []item
 	Mod   time.Time
+	Label bool // 「# nichiji: label」の行があるファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+}
+
+// isLabelLine は「# nichiji: label」(大文字小文字・空白は問わない)。
+func isLabelLine(t string) bool {
+	t = strings.ToLower(strings.Join(strings.Fields(strings.TrimPrefix(t, "#")), ""))
+	return t == "nichiji:label"
 }
 
 func (f *File) Entries() []*Entry {
@@ -268,6 +275,9 @@ func load(path string) (*File, error) {
 	for i := 0; i < len(lines); i++ {
 		ln := strings.TrimSuffix(lines[i], "\r")
 		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "#") && isLabelLine(t) {
+			f.Label = true
+		}
 		if t == "" || strings.HasPrefix(t, "#") || (i == 0 && (strings.HasPrefix(t, "日時,") || strings.HasPrefix(strings.ToLower(t), "datetime,"))) {
 			f.Items = append(f.Items, item{raw: ln})
 			continue
