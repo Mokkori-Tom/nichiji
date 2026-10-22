@@ -1161,10 +1161,12 @@ func (m *model) occText(o occ, withTime bool) string {
 	t := strings.ReplaceAll(e.textOn(day(o.at)), "\n", "⏎")
 	if o.timed {
 		if withTime {
-			t = o.at.Format("15:04") + " " + t
-		}
-		if !o.end.IsZero() && m.level != lvTime { // 時の目盛りでは └… end の行が終わりを示す
-			t += " 〜" + endLabel(o.at, o.end)
+			// 日の目盛り: 時刻は前にまとめる(09:00-10:00 定例)。時の目盛りでは └… end の行が終わりを示す
+			hm := o.at.Format("15:04")
+			if !o.end.IsZero() {
+				hm += "-" + endLabel(o.at, o.end)
+			}
+			t = hm + " " + t
 		}
 		if overdue(o) {
 			t = "LATE " + t
@@ -1208,7 +1210,7 @@ func (m *model) cellText(c cell) string {
 	for _, o := range c.ends {
 		t := strings.ReplaceAll(o.e.textOn(day(o.at)), "\n", "⏎") + " end"
 		if m.level == lvDay {
-			t = "〜" + endLabel(o.at, o.end) + " " + t
+			t = endLabel(o.at, o.end) + " " + t
 		}
 		if m.level == lvTime {
 			t = "└" + t
