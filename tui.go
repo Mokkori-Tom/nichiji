@@ -706,6 +706,11 @@ func (m *model) setLevel(lv int) {
 	t := m.rowTime(r)
 	m.level = lv
 	m.anchor = r.date
+	defer func() {
+		if m.hidden(m.target) {
+			m.moveCol(1)
+		}
+	}()
 	if r.date.IsZero() {
 		m.anchor = day(now())
 	}
@@ -974,9 +979,9 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+u", "pgup":
 		m.sel -= m.bodyH() / 2
 	case "h", "left":
-		m.target = (m.target + len(m.files) - 1) % len(m.files)
+		m.moveCol(-1)
 	case "l", "right", "tab":
-		m.target = (m.target + 1) % len(m.files)
+		m.moveCol(1)
 	case "+", "=":
 		m.setLevel(m.level - 1)
 	case "enter", "o":
@@ -1067,6 +1072,22 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.reanchor()
 	m.skipHdr(dir)
 	return m, nil
+}
+
+// hidden は月・年の目盛りで隠す列(label のファイル。曜日などは粗い目盛りでは意味がない)。
+func (m *model) hidden(j int) bool {
+	return m.level >= lvMonth && j < len(m.ctxFile) && m.ctxFile[j]
+}
+
+// moveCol は隠れた列を飛ばして列を移る。
+func (m *model) moveCol(dir int) {
+	n := len(m.files)
+	for i := 0; i < n; i++ {
+		m.target = (m.target + dir + n) % n
+		if !m.hidden(m.target) {
+			return
+		}
+	}
 }
 
 func editorCmd() []string {
@@ -1288,12 +1309,17 @@ func (m *model) View() string {
 	natural := make([]int, len(m.files))
 	for j, f := range m.files {
 		natural[j] = runewidth.StringWidth(f.Name()) + 1
+		if m.hidden(j) {
+			natural[j] = 0
+		}
 	}
 	for i := m.off; i < len(m.rows) && i < m.off+bodyH; i++ {
 		r := m.rows[i]
 		lw = max(lw, runewidth.StringWidth(m.label(r))+1)
 		for j, c := range r.cells {
-			natural[j] = max(natural[j], runewidth.StringWidth(m.cellText(c))+1)
+			if !m.hidden(j) {
+				natural[j] = max(natural[j], runewidth.StringWidth(m.cellText(c))+1)
+			}
 		}
 	}
 	crumb := m.crumb()
@@ -1328,6 +1354,9 @@ func (m *model) View() string {
 
 	hdr := strings.Repeat(" ", lw)
 	for j, f := range m.files {
+		if m.hidden(j) {
+			continue
+		}
 		st := stDim
 		if j == m.target {
 			st = stHead.Underline(true)
@@ -1366,6 +1395,9 @@ func (m *model) View() string {
 		var b strings.Builder
 		b.WriteString(lst.Render(fit(m.label(r), lw)))
 		for j, c := range r.cells {
+			if m.hidden(j) {
+				continue
+			}
 			st := stPlain
 			if c.ctx || (len(c.os) == 0 && len(c.ends) > 0) {
 				st = stDim
