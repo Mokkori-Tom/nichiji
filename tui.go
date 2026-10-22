@@ -983,11 +983,11 @@ func (m *model) label(r trow) string {
 	case m.level == lvYear:
 		return r.date.Format("2006")
 	case m.level == lvDay:
-		return dateLabel(r.date)
+		return shortDate(r.date)
 	}
-	d := "          "
+	d := strings.Repeat(" ", len(shortDate(r.date)))
 	if r.first {
-		d = dateLabel(r.date)
+		d = shortDate(r.date)
 	}
 	if r.slot >= 0 {
 		return fmt.Sprintf("%s %02d:%02d", d, r.slot/60, r.slot%60)
@@ -995,16 +995,39 @@ func (m *model) label(r trow) string {
 	return d
 }
 
-func (m *model) labelW() int {
-	switch m.level {
-	case lvTime:
-		return 17
-	case lvDay:
-		return 11
-	case lvMonth:
-		return 8
+// shortDate は今年なら年を省く(狭い画面で左の欄を細くするため)。
+func shortDate(d time.Time) string {
+	if d.Year() == now().Year() {
+		return d.Format("01-02")
 	}
-	return 5
+	return dateLabel(d)
+}
+
+// colWidths は列の幅を中身に合わせて決める。全部入るなら中身どおり、入らなければ
+// 短い列は中身どおりにして、残りを長い列で等分する。
+func colWidths(natural []int, avail int) []int {
+	n := len(natural)
+	w := make([]int, n)
+	left, rest := avail, n
+	done := make([]bool, n)
+	for changed := true; changed && rest > 0; {
+		changed = false
+		share := left / rest
+		for j := range natural {
+			if !done[j] && natural[j] <= share {
+				w[j], done[j] = natural[j], true
+				left -= natural[j]
+				rest--
+				changed = true
+			}
+		}
+	}
+	for j := range natural {
+		if !done[j] {
+			w[j] = max(4, left/max(1, rest))
+		}
+	}
+	return w
 }
 
 // occText はマスに書く1件分。
@@ -1061,10 +1084,27 @@ func (m *model) cellText(c cell) string {
 }
 
 func (m *model) View() string {
-	lw := m.labelW()
-	n := len(m.files)
-	cw := max(4, (m.w-lw)/n)
 	bodyH := m.bodyH()
+	if m.sel < m.off {
+		m.off = m.sel
+	}
+	if m.sel >= m.off+bodyH {
+		m.off = m.sel - bodyH + 1
+	}
+	// 見えている行から、左の欄と各列の幅を決める
+	lw := 1
+	natural := make([]int, len(m.files))
+	for j, f := range m.files {
+		natural[j] = runewidth.StringWidth(f.Name()) + 1
+	}
+	for i := m.off; i < len(m.rows) && i < m.off+bodyH; i++ {
+		r := m.rows[i]
+		lw = max(lw, runewidth.StringWidth(m.label(r))+1)
+		for j, c := range r.cells {
+			natural[j] = max(natural[j], runewidth.StringWidth(m.cellText(c))+1)
+		}
+	}
+	cws := colWidths(natural, m.w-lw)
 
 	done := "done:hidden"
 	if !m.hideDone {
@@ -1080,6 +1120,13 @@ func (m *model) View() string {
 	}
 	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
 		seg{"  " + done, stDim}, seg{"  " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
+	if m.w < 70 { // 狭い画面: 今の目盛りと時刻だけ
+		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}}
+		if !m.hideDone {
+			segs = append(segs, seg{"  +done", stDim})
+		}
+		title = line(append(segs, seg{"  " + now().Format("01-02 15:04"), stToday}), m.w, false)
+	}
 
 	hdr := strings.Repeat(" ", lw)
 	for j, f := range m.files {
@@ -1087,15 +1134,9 @@ func (m *model) View() string {
 		if j == m.target {
 			st = stHead.Underline(true)
 		}
-		hdr += st.Render(fit(f.Name(), cw-1)) + " "
+		hdr += st.Render(fit(f.Name(), cws[j]-1)) + " "
 	}
 
-	if m.sel < m.off {
-		m.off = m.sel
-	}
-	if m.sel >= m.off+bodyH {
-		m.off = m.sel - bodyH + 1
-	}
 	today := day(now())
 	var body []string
 	if m.memoView {
@@ -1128,7 +1169,7 @@ func (m *model) View() string {
 			if i == m.sel && j == m.target {
 				st = stSel
 			}
-			b.WriteString(st.Render(fit(txt, cw-1)) + " ")
+			b.WriteString(st.Render(fit(txt, cws[j]-1)) + " ")
 		}
 		body = append(body, b.String())
 	}
