@@ -65,30 +65,32 @@ const (
 )
 
 type model struct {
-	files    []*File
-	target   int
-	level    int
-	rows     []trow
-	sel, off int
-	anchor   time.Time
-	hideDone bool
-	w, h     int
-	in       textinput.Model
-	inMode   int
-	inE      *Entry
-	inRow    trow
-	msg      string
-	hint     string
-	help     bool
-	gPending bool
-	search   string
-	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
-	pickList []occ
-	pickSel  int
-	ctxFile  []bool // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
-	memoView bool   // 選んだ予定の内容とメモを全文で見ている
-	memoOff  int
-	listMemo bool // ls 用: メモ本文も出す
+	files     []*File
+	target    int
+	level     int
+	rows      []trow
+	sel, off  int
+	anchor    time.Time
+	hideDone  bool
+	w, h      int
+	in        textinput.Model
+	inMode    int
+	inE       *Entry
+	inRow     trow
+	msg       string
+	hint      string
+	help      bool
+	gPending  bool
+	search    string
+	pick      bool // マスを開いて中の予定を1件ずつ選んでいる
+	pickList  []occ
+	pickSel   int
+	ctxFile   []bool          // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	sched     bool            // u: 未定の予定を順に選んで日時を決めている
+	schedSkip map[*Entry]bool // 今回は飛ばした未定
+	memoView  bool            // 選んだ予定の内容とメモを全文で見ている
+	memoOff   int
+	listMemo  bool // ls 用: メモ本文も出す
 }
 
 var (
@@ -114,10 +116,55 @@ func newModel(files []*File) *model {
 	}
 	m.build()
 	m.jumpNow()
+	if n := len(undatedEntries(files)); n > 0 {
+		m.msg = fmt.Sprintf("%d undated: press u to schedule them", n)
+	}
 	return m
 }
 
 func (m *model) Init() tea.Cmd { return tick() }
+
+// undatedEntries は日時を決めるべき予定(未定のまま、済んでいない。label のファイルは除く)。
+func undatedEntries(files []*File) []*Entry {
+	var out []*Entry
+	for _, f := range files {
+		if f.Label {
+			continue
+		}
+		for _, e := range f.Entries() {
+			if e.Kind == kUndef && e.Raw == "" && !isDone(e) {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// nextUndated は u の流れで、次の未定を選んで日時の入力欄を開く。無くなれば終わる。
+func (m *model) nextUndated() {
+	var todo []*Entry
+	for _, e := range undatedEntries(m.files) {
+		if !m.schedSkip[e] {
+			todo = append(todo, e)
+		}
+	}
+	if len(todo) == 0 {
+		m.sched = false
+		m.inMode = inNone
+		m.in.Blur()
+		if n := len(undatedEntries(m.files)); n > 0 {
+			m.msg = fmt.Sprintf("%d undated left (skipped)", n)
+		} else {
+			m.msg = "no undated entries left"
+		}
+		return
+	}
+	e := todo[0]
+	m.sched, m.inE = true, e
+	m.focus(e)
+	m.startInput(inWhen, "when> ", "")
+	m.hint = fmt.Sprintf("undated %d: %s  (e.g. 10/25 14:00-15:00 | +3 | empty = skip | Esc = stop)", len(todo), short(e.Text, 30))
+}
 
 type tickMsg struct{}
 
@@ -783,6 +830,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
 		m.inMode = inNone
+		m.sched = false
 		m.in.Blur()
 		return m, nil
 	case tea.KeyEnter:
@@ -827,6 +875,11 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
 		case inWhen:
+			if m.sched && val == "" {
+				m.schedSkip[m.inE] = true // 今回は飛ばす
+				m.nextUndated()
+				return m, nil
+			}
 			base := m.anchor
 			if m.inE.Kind == kDate || m.inE.Kind == kTime {
 				base = m.inE.At
@@ -848,6 +901,10 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
+			if m.sched {
+				m.nextUndated()
+				return m, nil
+			}
 		case inSearch:
 			m.search = val
 			m.findNext(1)
@@ -991,6 +1048,9 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.findNext(1)
 	case "N":
 		m.findNext(-1)
+	case "u":
+		m.schedSkip = map[*Entry]bool{}
+		m.nextUndated()
 	case "a":
 		m.startInput(inQuick, "quick (no date)> ", "")
 	case "A":
@@ -1317,10 +1377,14 @@ func (m *model) View() string {
 	if crumb != "" {
 		pos = seg{"  " + crumb, stPlain}
 	}
+	und := seg{"", stWarn}
+	if n := len(undatedEntries(m.files)); n > 0 {
+		und.s = fmt.Sprintf("  undated:%d", n) // 決めるまで出し続ける
+	}
 	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
-		pos, seg{"  " + done, stDim}, seg{"  now " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
+		pos, und, seg{"  " + done, stDim}, seg{"  now " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
 	if m.w < 70 { // 狭い画面: 目盛り・位置・今の時刻だけ
-		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}, pos}
+		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}, pos, und}
 		if !m.hideDone {
 			segs = append(segs, seg{"  +done", stDim})
 		}
@@ -1494,10 +1558,10 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l column +/- scale Enter open Space memo t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l column +/- scale Enter open Space memo u schedule t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  u schedule undated one by one  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort

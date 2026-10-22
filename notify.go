@@ -72,6 +72,11 @@ func dueNotices(files []*File, before int) []notice {
 			}
 		}
 	}
+	// 未定があれば1日1回だけ促す
+	if us := undatedEntries(files); len(us) > 0 {
+		out = append(out, notice{"undated|" + day(n).Format("2006-01-02"),
+			fmt.Sprintf("%d undated: schedule them", len(us)), "first: " + short(us[0].Text, 40) + "  (nichiji: press u)"})
+	}
 	return out
 }
 
