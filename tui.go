@@ -85,8 +85,10 @@ type model struct {
 	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
 	pickList []occ
 	pickSel  int
-	ctxFile  []bool // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
-	memoView bool   // 選んだ予定の内容とメモを全文で見ている
+	ctxFile  []bool    // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	freeAt   time.Time // f で見つけた空きの始まり(A でここに足す)。ゼロなら無し
+	freeEnd  time.Time
+	memoView bool // 選んだ予定の内容とメモを全文で見ている
 	memoOff  int
 	listMemo bool // ls 用: メモ本文も出す
 }
@@ -189,6 +191,43 @@ func undatedEntries(files []*File) []*Entry {
 		}
 	}
 	return out
+}
+
+// jumpFree は f: 選んでいる列の人が次に空いている時間(15分以上)へ移る。
+// 続けて押すと、その次の空きへ。空きには行が無いので、すぐ手前の行を選ぶ。
+func (m *model) jumpFree() {
+	f := m.files[m.target]
+	from := now()
+	if !m.freeAt.IsZero() {
+		from = m.freeEnd
+	}
+	for i := 0; i < 400; i++ {
+		d := day(from).AddDate(0, 0, i)
+		for _, g := range freeSlots([]*File{f}, d, 0, 1440, 15) {
+			if !g[1].After(from) {
+				continue
+			}
+			st := g[0]
+			if st.Before(from) {
+				st = ceil5(from)
+			}
+			if g[1].Sub(st) < 15*time.Minute {
+				continue
+			}
+			m.freeAt, m.freeEnd = st, g[1]
+			m.anchor = day(st)
+			m.build()
+			m.seek(st)
+			if m.sel > 0 && m.rowTime(m.rows[m.sel]).After(st) {
+				m.sel--
+				m.skipHdr(-1)
+			}
+			m.msg = fmt.Sprintf("free %s %s %s-%s (%s)  A to add here, f for the next",
+				f.Name(), st.Format("01-02"), st.Format("15:04"), endLabel(st, g[1]), durLabel(g[1].Sub(st)))
+			return
+		}
+	}
+	m.msg = f.Name() + ": no free time found"
 }
 
 // jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、
@@ -1019,6 +1058,9 @@ func (m *model) bodyH() int {
 func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.msg = ""
 	key := k.String()
+	if key != "f" && key != "A" {
+		m.freeAt = time.Time{} // 空きを辿るのは f を続けて押しているあいだだけ
+	}
 	if m.gPending {
 		m.gPending = false
 		if key == "g" {
@@ -1117,9 +1159,15 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jumpUntimed()
 	case "a":
 		m.startInput(inQuick, "quick (no date)> ", "")
+	case "f":
+		m.jumpFree()
 	case "A":
 		r, _ := m.curRow()
-		if m.level >= lvMonth {
+		if !m.freeAt.IsZero() {
+			// f で見つけた空きの始まりに足す
+			r = trow{date: day(m.freeAt), slot: mins(m.freeAt, day(m.freeAt))}
+			m.freeAt = time.Time{}
+		} else if m.level >= lvMonth {
 			m.msg = "use the hour or day scale"
 			break
 		}
@@ -1626,10 +1674,10 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  u jump to the next entry without a time  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  u jump to the next entry without a time  f next free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort
