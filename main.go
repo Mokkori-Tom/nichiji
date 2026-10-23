@@ -15,7 +15,7 @@ const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One
   nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
   nichiji ls [-days 14] [-past 0] [-u] [-memo] [FILE ...]  list upcoming entries (* = has a memo)
   nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
-  nichiji check [FILE ...]                     report unreadable dates, overlaps and LATE entries; exit 1 if any
+  nichiji check [FILE ...]                     report unreadable dates, overlaps, LATE, broken records, 4+ columns; exit 1 if any
   nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
   nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry; no -d = undated
   nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
@@ -23,13 +23,15 @@ const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One
   nichiji done -f FILE -match WORD [-note TEXT]  = set -status done -end now
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
-                                               notify before start and when LATE (once each)
+                                               notify before start and when LATE (once each), and daily about entries without a time
   common: -now "2026-12-24 10:00"   pretend it is this time
 
 WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | +3 | +3 9:00 | empty = undated
 repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age) w=sun 10:00-11:00 (weekly)
         d=1|d=15 (monthly) w=sat&b=1 (last Saturday) m=1&w=mon&a=2 (2nd Monday of January)
+every entry is a slot of time: undated, date-only and untimed repeats are "no time" until you give them a time
 entries with a time may not overlap within one file (different files may)
+CSV per RFC 4180: quote cells with commas or line breaks; a "# nichiji: label" line makes a file a label column (e.g. weekdays)
 leading [reserved] [running] = open, [done] [canceled] = closed (hidden in the TUI, v to show)
 blank lines and lines starting with # are ignored and kept as they are
 default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
