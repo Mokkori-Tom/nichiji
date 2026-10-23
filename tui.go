@@ -962,7 +962,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 			f := m.files[m.target]
-			e := &Entry{Text: val, file: f}
+			e := &Entry{Text: unescapeNL(val), file: f}
 			if m.inMode == inSlot {
 				r := m.inRow
 				switch {
@@ -986,12 +986,12 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if val == "" {
 				break
 			}
-			m.inE.Text, m.inE.src = val, ""
+			m.inE.Text, m.inE.src = unescapeNL(val), ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
 		case inMemo:
-			m.inE.Memo, m.inE.src = val, ""
+			m.inE.Memo, m.inE.src = unescapeNL(val), ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
@@ -1197,9 +1197,9 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inE = e
 		switch key {
 		case "e":
-			m.startInput(inText, "text> ", e.Text)
+			m.startInput(inText, "text> ", escapeNL(e.Text)) // 入力欄は1行なので改行は \n で見せる
 		case "m":
-			m.startInput(inMemo, "memo> ", e.Memo)
+			m.startInput(inMemo, "memo> ", escapeNL(e.Memo))
 		case "s":
 			pre := e.Raw
 			if unscheduled(e) && pre != "" {

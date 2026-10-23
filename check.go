@@ -15,8 +15,14 @@ func problems(f *File) []string {
 	}
 	seen := map[[2]*Entry]bool{}
 	for _, e := range f.Entries() {
-		if e.odd {
+		switch {
+		case e.odd:
 			out = append(out, fmt.Sprintf("broken? record spans %d lines and swallows lines that look like entries (sorted by line?): %s", e.span, where(e)))
+		case e.span > 1:
+			out = append(out, fmt.Sprintf("spans %d lines: write newlines as \\n on one line (editing it in the TUI does this): %s", e.span, where(e)))
+		}
+		if e.cols > 3 {
+			out = append(out, fmt.Sprintf("%d columns: an unquoted comma? (read as part of the memo): %s", e.cols, where(e)))
 		}
 		if e.Kind == kUndef && e.Raw != "" {
 			out = append(out, "unreadable date: "+where(e))
@@ -44,18 +50,13 @@ func problems(f *File) []string {
 	return out
 }
 
-// check は問題を出して数を返す。改行を含むだけの行は note として出すが数えない(わざと書いたメモもあるので)。
+// check は問題を出して数を返す。
 func check(w io.Writer, files []*File) int {
 	n := 0
 	for _, f := range files {
 		for _, p := range problems(f) {
 			fmt.Fprintln(w, p)
 			n++
-		}
-		for _, e := range f.Entries() {
-			if e.span > 1 && !e.odd {
-				fmt.Fprintf(w, "note: spans %d lines (a newline inside quotes; keep these lines together when sorting): %s:%d  %s\n", e.span, f.Name(), e.line, short(e.Text, 40))
-			}
 		}
 	}
 	return n

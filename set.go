@@ -146,13 +146,13 @@ func setEntry(path string, o setOpts) (string, error) {
 	}
 	text := e.Text
 	if o.text != "" {
-		text = o.text
+		text = unescapeNL(o.text)
 	}
 	if o.st != "" {
 		text = setStatus(text, o.st)
 	}
 	if o.note != "" {
-		text += " | " + o.note
+		text += " | " + unescapeNL(o.note)
 	}
 	e.setRaw(raw)
 	if o.end != "" && !(o.softEnd && e.Kind != kTime) {
@@ -164,7 +164,7 @@ func setEntry(path string, o setOpts) (string, error) {
 	}
 	e.Text = text
 	if o.memo != "" {
-		e.Memo = o.memo
+		e.Memo = unescapeNL(o.memo)
 	}
 	if c, bad := e.clash(f); bad && !o.force {
 		return "", fmt.Errorf("%v (use -force to write anyway)", clashMsg(c))
