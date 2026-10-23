@@ -35,6 +35,8 @@ type Entry struct {
 	base int    // 起点の年(\a \y 用)
 	src  string // 読み込んだ行そのもの。変更したら空にする
 	line int    // ファイルの何行目か(エディタで開く位置。新しい予定は 0)
+	span int    // 何行にまたがっているか(内容やメモに改行がある。ふつうは 1)
+	odd  bool   // またいだ行の中に予定らしい行がある(sort などで壊れた疑い)
 	file *File
 }
 
@@ -278,7 +280,8 @@ func load(path string) (*File, error) {
 		if strings.HasPrefix(t, "#") && isLabelLine(t) {
 			f.Label = true
 		}
-		if t == "" || strings.HasPrefix(t, "#") || (i == 0 && (strings.HasPrefix(t, "日時,") || strings.HasPrefix(strings.ToLower(t), "datetime,"))) {
+		// 見出しの行(日時,内容)は何行目にあっても見出し。並べ替えで途中に来ても予定として読まない
+		if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "日時,") || strings.HasPrefix(strings.ToLower(t), "datetime,") {
 			f.Items = append(f.Items, item{raw: ln})
 			continue
 		}
@@ -293,7 +296,12 @@ func load(path string) (*File, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		e := &Entry{file: f, line: first}
+		e := &Entry{file: f, line: first, span: i + 2 - first}
+		for _, cont := range lines[first : i+1] { // 2行目以降(first は1始まりの行番号なので、ここから先が続きの行)
+			if reLooksEntry.MatchString(strings.TrimSpace(cont)) {
+				e.odd = true
+			}
+		}
 		e.setRaw(rec[0])
 		if len(rec) > 1 {
 			e.Text = rec[1]
@@ -331,6 +339,9 @@ func csvRead(s string, lazy bool) ([]string, error) {
 }
 
 var errChanged = errors.New("changed on disk")
+
+// reLooksEntry は予定の行の頭らしいもの(日付・未定のカンマ・繰り返し)。
+var reLooksEntry = regexp.MustCompile(`^(\d{4}[-/]\d|\d{4}\*|\*[-/]|,|[wmdyabn]\s*[=<>!])`)
 
 // save は一時ファイルに書いて rename する。読み込み後に他から書き換えられていたら書かない。
 func save(f *File) error {

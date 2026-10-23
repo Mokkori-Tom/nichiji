@@ -119,6 +119,14 @@ func newModel(files []*File) *model {
 	if n := len(undatedEntries(files)); n > 0 {
 		m.msg = fmt.Sprintf("%d entries have no time: press u to jump to them", n)
 	}
+	// 壊れた疑いのある行(並べ替えで引用が分断された等)は何より先に知らせる
+	for _, f := range files {
+		for _, e := range f.Entries() {
+			if e.odd {
+				m.msg = fmt.Sprintf("%s:%d may be broken (one record swallows %d lines): run nichiji check", f.Name(), e.line, e.span)
+			}
+		}
+	}
 	return m
 }
 

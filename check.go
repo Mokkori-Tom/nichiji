@@ -15,6 +15,9 @@ func problems(f *File) []string {
 	}
 	seen := map[[2]*Entry]bool{}
 	for _, e := range f.Entries() {
+		if e.odd {
+			out = append(out, fmt.Sprintf("broken? record spans %d lines and swallows lines that look like entries (sorted by line?): %s", e.span, where(e)))
+		}
 		if e.Kind == kUndef && e.Raw != "" {
 			out = append(out, "unreadable date: "+where(e))
 			continue
@@ -41,12 +44,18 @@ func problems(f *File) []string {
 	return out
 }
 
+// check は問題を出して数を返す。改行を含むだけの行は note として出すが数えない(わざと書いたメモもあるので)。
 func check(w io.Writer, files []*File) int {
 	n := 0
 	for _, f := range files {
 		for _, p := range problems(f) {
 			fmt.Fprintln(w, p)
 			n++
+		}
+		for _, e := range f.Entries() {
+			if e.span > 1 && !e.odd {
+				fmt.Fprintf(w, "note: spans %d lines (a newline inside quotes; keep these lines together when sorting): %s:%d  %s\n", e.span, f.Name(), e.line, short(e.Text, 40))
+			}
 		}
 	}
 	return n
