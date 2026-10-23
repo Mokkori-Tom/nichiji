@@ -932,7 +932,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		memo := strings.TrimRight(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 		if memo != msg.e.Memo {
-			msg.e.Memo, msg.e.src = memo, "" // 書き出すときに改行は \n になる
+			msg.e.Memo, msg.e.src = memo, "" // 改行はセルの中にそのまま("…" で囲んで書く)
 			m.commit(msg.e.file)
 			m.focus(msg.e)
 			m.refreshPick(msg.e)
@@ -989,7 +989,7 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 			f := m.files[m.target]
-			e := &Entry{Text: unescapeNL(val), file: f}
+			e := &Entry{Text: val, file: f}
 			if m.inMode == inSlot {
 				r := m.inRow
 				switch {
@@ -1013,12 +1013,12 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if val == "" {
 				break
 			}
-			m.inE.Text, m.inE.src = unescapeNL(val), ""
+			m.inE.Text, m.inE.src = val, ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
 		case inMemo:
-			m.inE.Memo, m.inE.src = unescapeNL(val), ""
+			m.inE.Memo, m.inE.src = val, ""
 			m.commit(m.inE.file)
 			m.focus(m.inE)
 			m.refreshPick(m.inE)
@@ -1224,9 +1224,16 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inE = e
 		switch key {
 		case "e":
-			m.startInput(inText, "text> ", escapeNL(e.Text)) // 入力欄は1行なので改行は \n で見せる
+			if strings.Contains(e.Text, "\n") {
+				m.msg = "the text has line breaks: edit it with E"
+				break
+			}
+			m.startInput(inText, "text> ", e.Text)
 		case "m":
-			m.startInput(inMemo, "memo> ", escapeNL(e.Memo))
+			if strings.Contains(e.Memo, "\n") {
+				return m, m.editMemo(e) // 1行の入力欄では改行が消えるので、エディタで開く
+			}
+			m.startInput(inMemo, "memo> ", e.Memo)
 		case "s":
 			pre := e.Raw
 			if unscheduled(e) && pre != "" {
@@ -1244,20 +1251,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.msg = why
 			break
 		}
-		tmp, err := os.CreateTemp("", "nichiji-memo-*.txt")
-		if err != nil {
-			m.msg = err.Error()
-			break
-		}
-		tmp.WriteString(e.Memo)
-		if e.Memo != "" {
-			tmp.WriteString("\n")
-		}
-		tmp.Close()
-		args := editorCmd()
-		c := exec.Command(args[0], append(args[1:], tmp.Name())...)
-		path := tmp.Name()
-		return m, tea.ExecProcess(c, func(err error) tea.Msg { return memoEditedMsg{e, path, err} })
+		return m, m.editMemo(e)
 	case "E":
 		f := m.files[m.target]
 		args := editorCmd()
@@ -1296,6 +1290,24 @@ func (m *model) moveCol(dir int) {
 			return
 		}
 	}
+}
+
+// editMemo はメモだけを一時ファイルにしてエディタで開く(改行も日本語入力もエディタのまま)。
+func (m *model) editMemo(e *Entry) tea.Cmd {
+	tmp, err := os.CreateTemp("", "nichiji-memo-*.txt")
+	if err != nil {
+		m.msg = err.Error()
+		return nil
+	}
+	tmp.WriteString(e.Memo)
+	if e.Memo != "" {
+		tmp.WriteString("\n")
+	}
+	tmp.Close()
+	args := editorCmd()
+	c := exec.Command(args[0], append(args[1:], tmp.Name())...)
+	path := tmp.Name()
+	return tea.ExecProcess(c, func(err error) tea.Msg { return memoEditedMsg{e, path, err} })
 }
 
 func editorCmd() []string {

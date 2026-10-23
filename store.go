@@ -35,7 +35,7 @@ type Entry struct {
 	base int    // 起点の年(\a \y 用)
 	src  string // 読み込んだ行そのもの。変更したら空にする
 	line int    // ファイルの何行目か(エディタで開く位置。新しい予定は 0)
-	span int    // 何行にまたがっているか(古い書き方: 引用の中に改行。ふつうは 1)
+	span int    // 何行にまたがっているか(セルの中に改行があれば 2 以上)
 	cols int    // 列の数(4以上ならカンマの囲み忘れの疑い)
 	odd  bool   // またいだ行の中に予定らしい行がある(sort などで壊れた疑い)
 	file *File
@@ -304,13 +304,13 @@ func load(path string) (*File, error) {
 			}
 		}
 		e.setRaw(rec[0])
-		// 1列目 日時、2列目 内容、3列目 メモ。改行は「\n」と書く(1行 = 1件)
+		// 1列目 日時、2列目 内容、3列目 メモ。セルの中の改行は CSV のルールどおり "…" の中にそのまま
 		e.cols = len(rec)
 		if len(rec) > 1 {
-			e.Text = unescapeNL(rec[1])
+			e.Text = rec[1]
 		}
 		if len(rec) > 2 {
-			e.Memo = unescapeNL(strings.Join(rec[2:], ",")) // 4列目以降は囲み忘れのカンマとみなしてメモにつなぐ(check で知らせる)
+			e.Memo = strings.Join(rec[2:], ",") // 4列目以降は囲み忘れのカンマとみなしてメモにつなぐ(check で知らせる)
 		}
 		e.src = ln
 		f.add(e)
@@ -389,20 +389,13 @@ func save(f *File) error {
 }
 
 // appendLine は TUI を開かずに1行足す(nichiji add 用)。
-// record は書き出す列。改行は「\n」にして、必ず1行に収める。
+// record は書き出す列。改行を含むセルは encoding/csv が "…" で囲む(RFC 4180)。
 func (e *Entry) record() []string {
 	if e.Memo == "" {
-		return []string{e.Raw, escapeNL(e.Text)}
+		return []string{e.Raw, e.Text}
 	}
-	return []string{e.Raw, escapeNL(e.Text), escapeNL(e.Memo)}
+	return []string{e.Raw, e.Text, e.Memo}
 }
-
-// 改行は「\n」の2文字で書く(\a \y などほかの \ はそのまま)。
-func escapeNL(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", `\n`)
-}
-
-func unescapeNL(s string) string { return strings.ReplaceAll(s, `\n`, "\n") }
 
 func appendLine(path string, e *Entry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

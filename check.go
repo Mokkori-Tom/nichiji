@@ -18,8 +18,6 @@ func problems(f *File) []string {
 		switch {
 		case e.odd:
 			out = append(out, fmt.Sprintf("broken? record spans %d lines and swallows lines that look like entries (sorted by line?): %s", e.span, where(e)))
-		case e.span > 1:
-			out = append(out, fmt.Sprintf("spans %d lines: write newlines as \\n on one line (editing it in the TUI does this): %s", e.span, where(e)))
 		}
 		if e.cols > 3 {
 			out = append(out, fmt.Sprintf("%d columns: an unquoted comma? (read as part of the memo): %s", e.cols, where(e)))

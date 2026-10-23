@@ -101,7 +101,7 @@ func main() {
 		if err == nil {
 			var f *File
 			if f, err = load(*file); err == nil {
-				e := &Entry{Text: unescapeNL(text), Memo: unescapeNL(*memo), file: f}
+				e := &Entry{Text: text, Memo: *memo, file: f}
 				e.setRaw(raw)
 				if o, bad := e.clash(f); bad {
 					err = clashMsg(o)
