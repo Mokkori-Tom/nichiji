@@ -287,6 +287,13 @@ func tick() tea.Cmd {
 
 type editedMsg struct{ err error }
 
+// memoEditedMsg は M でエディタに渡したメモが戻ってきたとき。
+type memoEditedMsg struct {
+	e    *Entry
+	path string
+	err  error
+}
+
 // mins は d の0時から t までの分(前日なら負、翌日なら1440超)。
 func mins(t, d time.Time) int { return int(t.Sub(d) / time.Minute) }
 
@@ -912,6 +919,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		return m, tick()
+	case memoEditedMsg:
+		defer os.Remove(msg.path)
+		if msg.err != nil {
+			m.msg = "editor: " + msg.err.Error()
+			return m, nil
+		}
+		b, err := os.ReadFile(msg.path)
+		if err != nil {
+			m.msg = err.Error()
+			return m, nil
+		}
+		memo := strings.TrimRight(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+		if memo != msg.e.Memo {
+			msg.e.Memo, msg.e.src = memo, "" // 書き出すときに改行は \n になる
+			m.commit(msg.e.file)
+			m.focus(msg.e)
+			m.refreshPick(msg.e)
+			m.msg = "memo saved"
+		}
+		return m, nil
 	case editedMsg:
 		m.reload()
 		m.refreshPick(nil)
@@ -1104,7 +1131,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.pickSel = len(m.pickList) - 1
 			return m, nil
-		case "e", "m", "s", "x", "E", "?", "ctrl+c", " ", "i":
+		case "e", "m", "M", "s", "x", "E", "?", "ctrl+c", " ", "i":
 		default:
 			return m, nil
 		}
@@ -1210,6 +1237,27 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "x":
 			m.inMode = inDelete
 		}
+	case "M":
+		// メモだけを一時ファイルにしてエディタで開く(改行も日本語入力もエディタのまま)
+		e, why := m.curEntry()
+		if e == nil {
+			m.msg = why
+			break
+		}
+		tmp, err := os.CreateTemp("", "nichiji-memo-*.txt")
+		if err != nil {
+			m.msg = err.Error()
+			break
+		}
+		tmp.WriteString(e.Memo)
+		if e.Memo != "" {
+			tmp.WriteString("\n")
+		}
+		tmp.Close()
+		args := editorCmd()
+		c := exec.Command(args[0], append(args[1:], tmp.Name())...)
+		path := tmp.Name()
+		return m, tea.ExecProcess(c, func(err error) tea.Msg { return memoEditedMsg{e, path, err} })
 	case "E":
 		f := m.files[m.target]
 		args := editorCmd()
@@ -1685,7 +1733,7 @@ func (m *model) status() string {
 const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  u jump to the next entry without a time  f next free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  M edit memo in the editor  u jump to the next entry without a time  f next free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort
