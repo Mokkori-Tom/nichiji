@@ -201,41 +201,63 @@ func undatedEntries(files []*File) []*Entry {
 	return out
 }
 
-// jumpFree は f: 選んでいる列の人が次に空いている時間(15分以上)へ移る。
-// 続けて押すと、その次の空きへ。空きには行が無いので、すぐ手前の行を選ぶ。
+// jumpFree は f: 選んでいる列の人が次に空いている時間(15分以上)へ移る。続けて押すと次の空きへ。
+// 予定と予定のあいだを空きとし、0時で区切らない(眠らない機械もあるので時間帯も決めない)。
+// 最後の予定より後は「ここから先ずっと空き」と1回だけ出して止まる。空きには行が無いので、すぐ手前の行を選ぶ。
 func (m *model) jumpFree() {
 	f := m.files[m.target]
 	from := now()
 	if !m.freeAt.IsZero() {
-		from = m.freeEnd
-	}
-	for i := 0; i < 400; i++ {
-		d := day(from).AddDate(0, 0, i)
-		for _, g := range freeSlots([]*File{f}, d, 0, 1440, 15) {
-			if !g[1].After(from) {
-				continue
-			}
-			st := g[0]
-			if st.Before(from) {
-				st = ceil5(from)
-			}
-			if g[1].Sub(st) < 15*time.Minute {
-				continue
-			}
-			m.freeAt, m.freeEnd = st, g[1]
-			m.anchor = day(st)
-			m.build()
-			m.seek(st)
-			if m.sel > 0 && m.rowTime(m.rows[m.sel]).After(st) {
-				m.sel--
-				m.skipHdr(-1)
-			}
-			m.msg = fmt.Sprintf("free %s %s %s-%s (%s)  A to add here, f for the next",
-				f.Name(), st.Format("01-02"), st.Format("15:04"), endLabel(st, g[1]), durLabel(g[1].Sub(st)))
+		if m.freeEnd.IsZero() {
+			m.msg = f.Name() + ": nothing after this (free from here on)"
 			return
 		}
+		from = m.freeEnd
 	}
-	m.msg = f.Name() + ": no free time found"
+	horizon := day(from).AddDate(0, 0, 400) // 繰り返しは果てが無いので先は400日まで
+	var busy [][2]time.Time
+	for d := day(from).AddDate(0, 0, -1); d.Before(horizon); d = d.AddDate(0, 0, 1) {
+		for _, o := range occsOn(f.Entries(), d) {
+			if st, en, ok := span(o); ok && en.After(from) {
+				busy = append(busy, [2]time.Time{st, en})
+			}
+		}
+	}
+	sort.Slice(busy, func(i, j int) bool { return busy[i][0].Before(busy[j][0]) })
+	cur := from
+	for _, b := range busy {
+		if st := ceil5(cur); b[0].Sub(st) >= 15*time.Minute {
+			m.showFree(f, st, b[0])
+			return
+		}
+		if b[1].After(cur) {
+			cur = b[1]
+		}
+	}
+	m.showFree(f, ceil5(cur), time.Time{})
+}
+
+// showFree は見つけた空きの手前の行を選び、下の行に空きを出す。end がゼロなら「ここから先ずっと」。
+func (m *model) showFree(f *File, st, end time.Time) {
+	m.freeAt, m.freeEnd = st, end
+	m.anchor = day(st)
+	m.build()
+	m.seek(st)
+	if m.sel > 0 && m.rowTime(m.rows[m.sel]).After(st) {
+		m.sel--
+		m.skipHdr(-1)
+	}
+	when := st.Format("01-02 15:04") + "-"
+	switch {
+	case end.IsZero():
+		m.msg = fmt.Sprintf("free %s %s  (nothing after this)  A to add here", f.Name(), when)
+		return
+	case day(end).Equal(day(st)) || (end.Equal(day(end)) && day(end).Equal(day(st).AddDate(0, 0, 1))):
+		when += endLabel(st, end)
+	default:
+		when = st.Format("01-02 15:04") + " - " + end.Format("01-02 15:04") // 0時をまたぐ空き
+	}
+	m.msg = fmt.Sprintf("free %s %s (%s)  A to add here, f for the next", f.Name(), when, durLabel(end.Sub(st)))
 }
 
 // jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、

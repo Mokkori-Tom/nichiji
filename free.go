@@ -61,8 +61,12 @@ func ceil5(t time.Time) time.Time {
 }
 
 func durLabel(d time.Duration) string {
-	h, mm := int(d.Hours()), int(d.Minutes())%60
+	days, h, mm := int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60
 	switch {
+	case days > 0 && h == 0:
+		return fmt.Sprintf("%dd", days)
+	case days > 0:
+		return fmt.Sprintf("%dd%dh", days, h) // 1日以上は日で(分は省く)
 	case h == 0:
 		return fmt.Sprintf("%dm", mm)
 	case mm == 0:
