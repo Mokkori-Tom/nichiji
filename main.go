@@ -13,18 +13,19 @@ import (
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
 
   nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
-  nichiji ls [-days 14] [-past 0] [-u] [-memo] [FILE ...]  list upcoming entries (* = has a memo)
+  nichiji ls [-days 14] [-past 0] [-u] [-memo] [-full] [FILE ...]  list upcoming entries (* = has a memo; -full = do not cut to the width)
   nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
   nichiji check [FILE ...]                     report unreadable dates, overlaps, LATE, broken records, 4+ columns; exit 1 if any
   nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
   nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry; no -d = undated
   nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
                                                rewrite one entry (refused if it overlaps)
-  nichiji done -f FILE -match WORD [-note TEXT]  = set -status done -end now
+  nichiji done -f FILE (-match WORD | -at WHEN) [-note TEXT]  = set -status done -end now
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
                                                notify before start and when LATE (once each), and daily about entries without a time
   common: -now "2026-12-24 10:00"   pretend it is this time
+  options go before the files; an option a command does not use is an error
 
 WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | +3 | +3 9:00 | empty = undated
 repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age) w=sun 10:00-11:00 (weekly)
@@ -73,6 +74,7 @@ func main() {
 	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / terminal)")
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
 	fs.Parse(args)
+	checkFlags(fs, sub)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
 			die(err)
@@ -197,6 +199,38 @@ func main() {
 	m := newModel(files)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		die(err)
+	}
+}
+
+// allowed はコマンドごとに使えるオプション(-now はどれでも)。関係の無いものは打ち間違いとして止める。
+var allowed = map[string]string{
+	"":       "",
+	"ls":     "days past u memo full overdue",
+	"check":  "",
+	"find":   "",
+	"add":    "f d m",
+	"set":    "f match at end status note text m force d",
+	"done":   "f match at end status note text m force d",
+	"free":   "len from to days",
+	"notify": "before cmd watch",
+}
+
+func checkFlags(fs *flag.FlagSet, sub string) {
+	name := sub
+	if name == "" {
+		name = "the TUI"
+	}
+	ok := " now " + allowed[sub] + " "
+	fs.Visit(func(fl *flag.Flag) {
+		if !strings.Contains(ok, " "+fl.Name+" ") {
+			die(fmt.Errorf("-%s is not used by %s (see nichiji -h)", fl.Name, name))
+		}
+	})
+	// Go の flag はファイル名の後ろのオプションを読まないので、ファイル名と取り違えないよう止める
+	for _, a := range fs.Args() {
+		if strings.HasPrefix(a, "-") && sub != "add" {
+			die(fmt.Errorf("%s: put options before the files (see nichiji -h)", a))
+		}
 	}
 }
 
