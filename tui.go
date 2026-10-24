@@ -85,9 +85,10 @@ type model struct {
 	pick     bool // マスを開いて中の予定を1件ずつ選んでいる
 	pickList []occ
 	pickSel  int
-	ctxFile  []bool    // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
-	freeAt   time.Time // f で見つけた空きの始まり(A でここに足す)。ゼロなら無し
-	freeEnd  time.Time
+	ctxFile  []bool         // 「# nichiji: label」のファイル(曜日など)。自分では行を作らず、ほかの予定のある日に添えるだけ
+	freeAt   time.Time      // f で選んでいる空きの始まり(A でここに足す)。ゼロなら無し
+	freeGaps [][2]time.Time // f / F で巡る空きの一覧(終わりがゼロの最後の1つは「ここから先ずっと」)
+	freeIdx  int
 	memoView bool // 選んだ予定の内容とメモを全文で見ている
 	memoOff  int
 	listMemo bool // ls 用: メモ本文も出す
@@ -201,19 +202,9 @@ func undatedEntries(files []*File) []*Entry {
 	return out
 }
 
-// jumpFree は f: 選んでいる列の人が次に空いている時間(15分以上)へ移る。続けて押すと次の空きへ。
-// 予定と予定のあいだを空きとし、0時で区切らない(眠らない機械もあるので時間帯も決めない)。
-// 最後の予定より後は「ここから先ずっと空き」と1回だけ出して止まる。空きには行が無いので、すぐ手前の行を選ぶ。
-func (m *model) jumpFree() {
-	f := m.files[m.target]
-	from := now()
-	if !m.freeAt.IsZero() {
-		if m.freeEnd.IsZero() {
-			m.msg = f.Name() + ": nothing after this (free from here on)"
-			return
-		}
-		from = m.freeEnd
-	}
+// freeGapsOf は f の空きの一覧: 今から先の、予定と予定のあいだ(15分以上)。0時で区切らず、
+// 眠らない機械もあるので時間帯も決めない。最後の予定より後は終わりゼロの1つ(ここから先ずっと)。
+func freeGapsOf(f *File, from time.Time) [][2]time.Time {
 	horizon := day(from).AddDate(0, 0, 400) // 繰り返しは果てが無いので先は400日まで
 	var busy [][2]time.Time
 	for d := day(from).AddDate(0, 0, -1); d.Before(horizon); d = d.AddDate(0, 0, 1) {
@@ -224,22 +215,42 @@ func (m *model) jumpFree() {
 		}
 	}
 	sort.Slice(busy, func(i, j int) bool { return busy[i][0].Before(busy[j][0]) })
+	var gaps [][2]time.Time
 	cur := from
 	for _, b := range busy {
 		if st := ceil5(cur); b[0].Sub(st) >= 15*time.Minute {
-			m.showFree(f, st, b[0])
-			return
+			gaps = append(gaps, [2]time.Time{st, b[0]})
 		}
 		if b[1].After(cur) {
 			cur = b[1]
 		}
 	}
-	m.showFree(f, ceil5(cur), time.Time{})
+	if len(busy) == 0 || busy[len(busy)-1][1].Before(horizon.AddDate(0, 0, -7)) {
+		gaps = append(gaps, [2]time.Time{ceil5(cur), {}}) // 最後の予定より後
+	}
+	return gaps
+}
+
+// jumpFree は f(dir=1)/ F(dir=-1): 選んでいる列の人の空きへ移る。一覧の端では反対の端へ回る。
+func (m *model) jumpFree(dir int) {
+	f := m.files[m.target]
+	if m.freeAt.IsZero() || len(m.freeGaps) == 0 {
+		m.freeGaps = freeGapsOf(f, now())
+		m.freeIdx = 0
+		if dir < 0 {
+			m.freeIdx = len(m.freeGaps) - 1
+		}
+	} else {
+		n := len(m.freeGaps)
+		m.freeIdx = (m.freeIdx + dir + n) % n
+	}
+	g := m.freeGaps[m.freeIdx]
+	m.showFree(f, g[0], g[1])
 }
 
 // showFree は見つけた空きの手前の行を選び、下の行に空きを出す。end がゼロなら「ここから先ずっと」。
 func (m *model) showFree(f *File, st, end time.Time) {
-	m.freeAt, m.freeEnd = st, end
+	m.freeAt = st
 	m.anchor = day(st)
 	m.build()
 	m.seek(st)
@@ -247,17 +258,18 @@ func (m *model) showFree(f *File, st, end time.Time) {
 		m.sel--
 		m.skipHdr(-1)
 	}
+	pos := fmt.Sprintf("%d/%d", m.freeIdx+1, len(m.freeGaps))
 	when := st.Format("01-02 15:04") + "-"
 	switch {
 	case end.IsZero():
-		m.msg = fmt.Sprintf("free %s %s  (nothing after this)  A to add here", f.Name(), when)
+		m.msg = fmt.Sprintf("free %s %s %s (nothing after this)  A add here, f back to the first, F back", pos, f.Name(), when)
 		return
 	case day(end).Equal(day(st)) || (end.Equal(day(end)) && day(end).Equal(day(st).AddDate(0, 0, 1))):
 		when += endLabel(st, end)
 	default:
 		when = st.Format("01-02 15:04") + " - " + end.Format("01-02 15:04") // 0時をまたぐ空き
 	}
-	m.msg = fmt.Sprintf("free %s %s (%s)  A to add here, f for the next", f.Name(), when, durLabel(end.Sub(st)))
+	m.msg = fmt.Sprintf("free %s %s %s (%s)  A add here, f next, F back", pos, f.Name(), when, durLabel(end.Sub(st)))
 }
 
 // jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、
@@ -1115,8 +1127,8 @@ func (m *model) bodyH() int {
 func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.msg = ""
 	key := k.String()
-	if key != "f" && key != "A" {
-		m.freeAt = time.Time{} // 空きを辿るのは f を続けて押しているあいだだけ
+	if key != "f" && key != "F" && key != "A" {
+		m.freeAt = time.Time{} // 空きを辿るのは f / F を続けて押しているあいだだけ
 	}
 	if m.gPending {
 		m.gPending = false
@@ -1217,7 +1229,9 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		m.startInput(inQuick, "quick (no date)> ", "")
 	case "f":
-		m.jumpFree()
+		m.jumpFree(1)
+	case "F":
+		m.jumpFree(-1)
 	case "A":
 		r, _ := m.curRow()
 		if !m.freeAt.IsZero() {
@@ -1767,7 +1781,7 @@ func (m *model) status() string {
 const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  M edit memo in the editor  u jump to the next entry without a time  f next free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+	"Space/i read text+memo  M edit memo in the editor  u jump to the next entry without a time  f/F next/previous free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
 
 func (m *model) footer() string {
 	hint := hintShort
