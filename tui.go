@@ -1141,6 +1141,17 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.help {
+		switch key {
+		case "j", "down":
+			m.memoOff++
+		case "k", "up":
+			m.memoOff = max(0, m.memoOff-1)
+		default:
+			m.help = false
+		}
+		return m, nil
+	}
 	if m.memoView {
 		switch key {
 		case "j", "down":
@@ -1178,7 +1189,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "?":
-		m.help = !m.help
+		m.help, m.memoOff = true, 0
 	case "g":
 		m.gPending = true
 	case "G":
@@ -1629,14 +1640,16 @@ func (m *model) View() string {
 
 	today := day(now())
 	var body []string
-	if m.memoView {
+	if m.help {
+		body = m.helpBody(bodyH)
+	} else if m.memoView {
 		body = m.memoBody(bodyH)
 	} else if m.pick {
 		body = m.pickBody(bodyH)
 	} else if len(m.rows) == 0 {
 		body = []string{stDim.Render(" (nothing)  a quick add, A add here")}
 	}
-	for i := m.off; !m.pick && !m.memoView && i < len(m.rows) && i < m.off+bodyH; i++ {
+	for i := m.off; !m.pick && !m.memoView && !m.help && i < len(m.rows) && i < m.off+bodyH; i++ {
 		r := m.rows[i]
 		lst := stDim
 		if r.first {
@@ -1784,14 +1797,48 @@ func (m *model) status() string {
 
 const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
-const hintFull = "j/k down/up  gg/G first/last dated entry  C-d/C-u half page  h/l(Tab) column = write target  +/- finer/coarser  Enter open cell  t now  " +
-	"Space/i read text+memo  M edit memo in the editor  u jump to the next entry without a time  f/F next/previous free time of this column (A adds there)  a quick add  A add at row  e text  m edit memo  s when  x delete  E editor at line  v show/hide done  / find n/N  r reload  q quit"
+// helpKeys は ? で出すキーの一覧(1キー1行)。
+var helpKeys = [][2]string{
+	{"j k", "down / up"},
+	{"gg G", "first / last dated entry"},
+	{"C-d C-u", "half page down / up"},
+	{"h l Tab", "column (= the file new entries go to)"},
+	{"+ -", "finer / coarser scale (hour day month year)"},
+	{"t", "now"},
+	{"Enter o", "open the cell: pick its entries one by one"},
+	{"Space i", "read the text and memo in full"},
+	{"u", "next entry without a time (give it one with s)"},
+	{"f F", "next / previous free time of this column"},
+	{"a", "quick add (no date)"},
+	{"A", "add at this row (or at the free time f found)"},
+	{"e", "edit the text"},
+	{"m M", "edit the memo on one line / in the editor"},
+	{"s", "set the date and time"},
+	{"x", "delete"},
+	{"E", "open the file in the editor at this line"},
+	{"v", "show / hide [done] [canceled]"},
+	{"/ n N", "find (text and memo), next, previous"},
+	{"r", "reload the files"},
+	{"?", "this help"},
+	{"q", "quit"},
+}
+
+func (m *model) helpBody(bodyH int) []string {
+	out := []string{line([]seg{{" keys  (j/k scroll, any other key closes)", stHead}}, m.w, false)}
+	for _, k := range helpKeys {
+		out = append(out, line([]seg{{fmt.Sprintf(" %-8s ", k[0]), stHead}, {k[1], stPlain}}, m.w, false))
+	}
+	off := min(m.memoOff, max(0, len(out)-bodyH))
+	m.memoOff = off
+	out = out[off:]
+	if len(out) > bodyH {
+		out = out[:bodyH]
+	}
+	return out
+}
 
 func (m *model) footer() string {
 	hint := hintShort
-	if m.help {
-		hint = hintFull
-	}
 	hints := line([]seg{{hint, stDim}}, m.w, false)
 	switch m.inMode {
 	case inDelete:

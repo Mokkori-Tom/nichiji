@@ -25,7 +25,7 @@ const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
                                                notify before start and when LATE (once each), and daily about entries without a time
-  common: -now "2026-12-24 10:00"   pretend it is this time
+  common: -now "2026-12-24 10:00"   pretend it is this time;  nichiji -version
   options go before the files; an option a command does not use is an error
 
 WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | +3 | +3 9:00 | empty = undated
@@ -82,7 +82,12 @@ func main() {
 	before := fs.Int("before", 10, "notify: minutes before start")
 	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / terminal)")
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
+	ver := fs.Bool("version", false, "print the version")
 	fs.Parse(args)
+	if *ver {
+		fmt.Println(version())
+		return
+	}
 	checkFlags(fs, sub)
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
@@ -241,6 +246,20 @@ func checkFlags(fs *flag.FlagSet, sub string) {
 			die(fmt.Errorf("%s: put options before the files (see nichiji -h)", a))
 		}
 	}
+}
+
+// version は go install で入れたときのモジュールの版(日付と commit を含む)。手元で build したなら (devel)。
+func version() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		v := bi.Main.Version
+		for _, st := range bi.Settings {
+			if st.Key == "vcs.revision" && len(st.Value) >= 7 {
+				v += " " + st.Value[:7]
+			}
+		}
+		return "nichiji " + v
+	}
+	return "nichiji (unknown)"
 }
 
 func die(err error) {
