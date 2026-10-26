@@ -761,7 +761,7 @@ func (m *model) seek(t time.Time) {
 			return
 		}
 	}
-	m.sel = len(m.rows) - 1
+	m.sel = max(0, len(m.rows)-1) // 表が空でも負にしない
 }
 
 // jumpNow は今日へ。時の目盛りなら、今かかっているかこれからの予定の行へ。
@@ -783,6 +783,10 @@ func (m *model) jumpNow() {
 
 // showDay は選んだ行の日の行(と月の見出し)が画面の一番上に来るようにする。
 func (m *model) showDay() {
+	if m.sel >= len(m.rows) { // 表が空
+		m.off = 0
+		return
+	}
 	off := m.sel
 	for off > 0 && (m.rows[off-1].date.Equal(m.rows[m.sel].date) || m.rows[off-1].slot == slotMonth) && m.rows[off-1].slot != slotUndef {
 		off--
@@ -807,7 +811,7 @@ func (m *model) jumpEdge(last bool) {
 	}
 	if t.IsZero() {
 		if last {
-			m.sel = len(m.rows) - 1
+			m.sel = max(0, len(m.rows)-1)
 		} else {
 			m.sel = 0
 		}

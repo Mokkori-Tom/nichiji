@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,14 @@ default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
 `
 
 func main() {
+	// 落ちたときは、不具合だと分かる1行を先に出す(その下の詳しい行は報告用)
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "nichiji: internal error (a bug, not your data): %v\nyour files were not changed. please report the lines below: https://github.com/Mokkori-Tom/nichiji/issues\n\n", r)
+			debug.PrintStack()
+			os.Exit(2)
+		}
+	}()
 	// 罫線(─ │ ┌)や … は、日本語の設定だと幅2と数えられるが、端末(Termux・tmux)は幅1で描くことが多い。
 	// ずれると列が崩れるので幅1に揃える。幅2で描く端末なら NICHIJI_AMBIGUOUS_WIDE=1。
 	runewidth.DefaultCondition.EastAsianWidth = os.Getenv("NICHIJI_AMBIGUOUS_WIDE") == "1"
