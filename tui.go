@@ -1179,21 +1179,22 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// findNext は / の検索: 表に読み込んでいる範囲だけでなく全部の予定から探し、日付の近い順に巡る。
+// findNext は / の検索: 選んでいる列(人)のファイルの予定だけから探し、日付の近い順に巡る。
 // 全角・半角やひらがな・カタカナは区別せず、文字が順番どおりに出てくれば当たる(そのまま含むものが先)。
 func (m *model) findNext(dir int) {
 	if m.search == "" {
 		return
 	}
+	f := m.files[m.target]
 	var es []*Entry
-	for _, e := range m.all() {
+	for _, e := range f.Entries() {
 		if m.visible(e) {
 			es = append(es, e)
 		}
 	}
 	hits := searchEntries(es, m.search)
 	if len(hits) == 0 {
-		m.msg = "not found: " + m.search
+		m.msg = fmt.Sprintf("not found in %s: %s  (h/l to search another person)", f.Name(), m.search)
 		return
 	}
 	sortByWhen(hits)
@@ -1210,7 +1211,7 @@ func (m *model) findNext(dir int) {
 	}
 	e := hits[next]
 	m.focus(e)
-	m.msg = fmt.Sprintf("found %d/%d: %s  %s  (n next, N back)", next+1, len(hits), e.file.Name(), short(e.Text, 30))
+	m.msg = fmt.Sprintf("found %d/%d in %s: %s  (n next, N back)", next+1, len(hits), e.file.Name(), short(e.Text, 30))
 }
 
 // sortByWhen は日付の近い順(繰り返しは今日以降の次の回、未定は最後)。
@@ -1291,7 +1292,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.pickSel = len(m.pickList) - 1
 			return m, nil
-		case "e", "m", "M", "s", "x", "E", "O", "?", "ctrl+c", " ", "i":
+		case "e", "m", "M", "s", "x", "d", "E", "O", "?", "ctrl+c", " ", "i":
 		default:
 			return m, nil
 		}
@@ -1317,6 +1318,26 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCol(-1)
 	case "l", "right", "tab":
 		m.moveCol(1)
+	case "d":
+		// 選んだ予定を済み([done])にする。済みは v で隠れるので、表から消える。もう一度押すと戻す
+		e, why := m.curEntry()
+		if e == nil {
+			m.msg = why
+			break
+		}
+		if isDone(e) {
+			e.Text = strings.TrimSpace(reStatus.ReplaceAllString(e.Text, ""))
+			m.msg = "back to open: " + short(e.Text, 30)
+		} else {
+			e.Text = setStatus(e.Text, "done")
+			m.msg = "done: " + short(e.Text, 30)
+			if m.hideDone {
+				m.msg += "  (hidden; v to show done entries)"
+			}
+		}
+		e.src = ""
+		m.commit(e.file)
+		m.clamp()
 	case "1", "2", "3", "4": // 端末が + - を拡大縮小に使うときのため、目盛りを直接選べる
 		m.setLevel(int(key[0] - '1'))
 	case "+", "=":
@@ -1914,7 +1935,7 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l person 1-4 scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l person 1-4 scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del d done E editor v done / find ? help q quit"
 
 // helpKeys は ? で出すキーの一覧(1キー1行)。
 var helpKeys = [][2]string{
@@ -1926,7 +1947,7 @@ var helpKeys = [][2]string{
 	{"t", "back to now"},
 	{"u", "jump to the next entry that still has no time (give it one with s)"},
 	{"f F", "jump to the next / previous free time of the selected person"},
-	{"/ n N", "find (fuzzy, text and memo), next, previous"},
+	{"/ n N", "find in the selected person's entries (fuzzy, text and memo), next, previous"},
 	{"Space i", "read the selected entry's text and memo in full"},
 	{"Enter o", "list the selected cell's entries with their dates (when a cell holds several)"},
 	{"a", "add without a date"},
@@ -1937,7 +1958,8 @@ var helpKeys = [][2]string{
 	{"E", "edit the selected entry in the editor (date and time, text, memo)"},
 	{"O", "open the whole file in the editor at this line"},
 	{"x", "delete"},
-	{"v", "show / hide entries starting with [done] or [canceled]"},
+	{"d", "mark the entry done (it disappears; press again to undo)"},
+	{"v", "show / hide the done and canceled entries"},
 	{"r", "reload the files"},
 	{"?", "this help"},
 	{"q", "quit"},
