@@ -11,15 +11,11 @@ import (
 	"time"
 )
 
-// find は全期間・未定・繰り返しを含めて、内容とメモ欄の部分一致を探す(大文字小文字は区別しない)。
+// find は全期間・未定・繰り返しを含めて、内容とメモを探す(TUI の / と同じあいまい検索)。
 func find(w io.Writer, files []*File, q string) int {
-	q = strings.ToLower(q)
 	n := 0
 	for _, f := range files {
-		for _, e := range f.Entries() {
-			if !strings.Contains(strings.ToLower(e.Text+"\n"+e.Memo), q) {
-				continue
-			}
+		for _, e := range searchEntries(f.Entries(), q) { // / と同じ探し方(あいまい、そのまま含むものが先)
 			when := e.Raw
 			if when == "" {
 				when = "undated"

@@ -321,6 +321,83 @@ func tick() tea.Cmd {
 
 type editedMsg struct{ err error }
 
+// entryEditedMsg は E でエディタに渡した予定1件が戻ってきたとき。
+type entryEditedMsg struct {
+	e    *Entry
+	path string
+	err  error
+}
+
+const entryHelp = "# nichiji: line 1 = date and time (empty = undated), line 2 = text, the rest = memo. (this line is removed)"
+
+// editEntry は選んだ予定1件だけを一時ファイルにしてエディタで開く。
+func (m *model) editEntry(e *Entry) tea.Cmd {
+	tmp, err := os.CreateTemp("", "nichiji-entry-*.txt")
+	if err != nil {
+		m.msg = err.Error()
+		return nil
+	}
+	fmt.Fprintf(tmp, "%s\n%s\n%s\n", entryHelp, e.Raw, e.Text)
+	if e.Memo != "" {
+		tmp.WriteString(e.Memo + "\n")
+	}
+	tmp.Close()
+	args := editorCmd()
+	c := exec.Command(args[0], append(args[1:], "+2", tmp.Name())...)
+	path := tmp.Name()
+	return tea.ExecProcess(c, func(err error) tea.Msg { return entryEditedMsg{e, path, err} })
+}
+
+// applyEntryEdit は E から戻った中身を予定に書き戻す。日時が読めない・重なるときは書かない。
+func (m *model) applyEntryEdit(msg entryEditedMsg) {
+	defer os.Remove(msg.path)
+	if msg.err != nil {
+		m.msg = "editor: " + msg.err.Error()
+		return
+	}
+	b, err := os.ReadFile(msg.path)
+	if err != nil {
+		m.msg = err.Error()
+		return
+	}
+	var ls []string
+	for _, l := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(l) != entryHelp { // 説明の行だけ外す(メモの # 見出しは残す)
+			ls = append(ls, l)
+		}
+	}
+	for len(ls) < 2 {
+		ls = append(ls, "")
+	}
+	e := msg.e
+	text := strings.TrimSpace(ls[1])
+	if text == "" {
+		m.msg = "not saved: the text (line 2) is empty"
+		return
+	}
+	raw, err := parseInput(ls[0], e.At)
+	if err != nil {
+		m.msg = "not saved: " + err.Error()
+		return
+	}
+	memo := strings.TrimRight(strings.Join(ls[2:], "\n"), "\n \t")
+	if raw == e.Raw && text == e.Text && memo == e.Memo {
+		return
+	}
+	old := *e
+	e.setRaw(raw)
+	e.Text, e.Memo, e.src = text, memo, ""
+	if o, bad := e.clash(e.file); bad {
+		*e = old
+		m.msg = "not saved: " + clashMsg(o).Error()
+		return
+	}
+	m.commit(e.file)
+	m.focus(e)
+	m.refreshPick(e)
+	m.msg = "saved"
+}
+
 // memoEditedMsg は M でエディタに渡したメモが戻ってきたとき。
 type memoEditedMsg struct {
 	e    *Entry
@@ -894,6 +971,10 @@ func (m *model) setLevel(lv int) {
 	}
 	r, _ := m.curRow()
 	t := m.rowTime(r)
+	if n := now(); r.slot != slotUndef && !n.Before(t) && n.Before(m.rowEnd(r)) && lv < m.level {
+		t = n // 細かくするとき、選んだ期間に今が入っていれば今へ(年の頭ではなく)
+		r.date = day(n)
+	}
 	m.level = lv
 	m.anchor = r.date
 	defer func() {
@@ -957,6 +1038,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		return m, tick()
+	case entryEditedMsg:
+		m.applyEntryEdit(msg)
+		return m, nil
 	case memoEditedMsg:
 		defer os.Remove(msg.path)
 		if msg.err != nil {
@@ -1095,29 +1179,56 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *model) rowText(r trow) string {
-	var b strings.Builder
-	for _, c := range r.cells {
-		for _, o := range c.os {
-			b.WriteString(o.e.Text + " " + o.e.Memo + "\n")
-		}
-	}
-	return strings.ToLower(b.String())
-}
-
+// findNext は / の検索: 表に読み込んでいる範囲だけでなく全部の予定から探し、日付の近い順に巡る。
+// 全角・半角やひらがな・カタカナは区別せず、文字が順番どおりに出てくれば当たる(そのまま含むものが先)。
 func (m *model) findNext(dir int) {
 	if m.search == "" {
 		return
 	}
-	q := strings.ToLower(m.search)
-	for i := 1; i <= len(m.rows); i++ {
-		j := ((m.sel+dir*i)%len(m.rows) + len(m.rows)) % len(m.rows)
-		if strings.Contains(m.rowText(m.rows[j]), q) {
-			m.sel = j
-			return
+	var es []*Entry
+	for _, e := range m.all() {
+		if m.visible(e) {
+			es = append(es, e)
 		}
 	}
-	m.msg = "not found: " + m.search
+	hits := searchEntries(es, m.search)
+	if len(hits) == 0 {
+		m.msg = "not found: " + m.search
+		return
+	}
+	sortByWhen(hits)
+	next := 0
+	if dir < 0 {
+		next = len(hits) - 1
+	}
+	if cur, _ := m.curEntry(); cur != nil {
+		for i, e := range hits {
+			if e == cur {
+				next = (i + dir + len(hits)) % len(hits)
+			}
+		}
+	}
+	e := hits[next]
+	m.focus(e)
+	m.msg = fmt.Sprintf("found %d/%d: %s  %s  (n next, N back)", next+1, len(hits), e.file.Name(), short(e.Text, 30))
+}
+
+// sortByWhen は日付の近い順(繰り返しは今日以降の次の回、未定は最後)。
+func sortByWhen(es []*Entry) {
+	key := func(e *Entry) time.Time {
+		switch e.Kind {
+		case kDate, kTime:
+			return e.At
+		case kRepeat:
+			for d, i := day(now()), 0; i < 400; d, i = d.AddDate(0, 0, 1), i+1 {
+				if _, ok := e.on(d); ok {
+					return d
+				}
+			}
+		}
+		return time.Date(9999, 1, 1, 0, 0, 0, 0, time.Local)
+	}
+	sort.SliceStable(es, func(i, j int) bool { return key(es[i]).Before(key(es[j])) })
 }
 
 func (m *model) bodyH() int {
@@ -1180,7 +1291,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.pickSel = len(m.pickList) - 1
 			return m, nil
-		case "e", "m", "M", "s", "x", "E", "?", "ctrl+c", " ", "i":
+		case "e", "m", "M", "s", "x", "E", "O", "?", "ctrl+c", " ", "i":
 		default:
 			return m, nil
 		}
@@ -1206,6 +1317,8 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCol(-1)
 	case "l", "right", "tab":
 		m.moveCol(1)
+	case "1", "2", "3", "4": // 端末が + - を拡大縮小に使うときのため、目盛りを直接選べる
+		m.setLevel(int(key[0] - '1'))
 	case "+", "=":
 		m.setLevel(m.level - 1)
 	case "enter", "o":
@@ -1234,7 +1347,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reload()
 		m.msg = "reloaded"
 	case "/":
-		m.startInput(inSearch, "/", m.search)
+		m.startInput(inSearch, "/", "") // 毎回まっさら(前の語を繰り返すのは n / N)
 	case "n":
 		m.findNext(1)
 	case "N":
@@ -1304,6 +1417,12 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.editMemo(e)
 	case "E":
+		// 選んだ予定だけをエディタで(予定が無ければファイル全体)
+		if e, _ := m.curEntry(); e != nil {
+			return m, m.editEntry(e)
+		}
+		fallthrough
+	case "O":
 		f := m.files[m.target]
 		args := editorCmd()
 		if e, _ := m.curEntry(); e != nil {
@@ -1795,29 +1914,30 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l column +/- scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l person 1-4 scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del E editor v done / find ? help q quit"
 
 // helpKeys は ? で出すキーの一覧(1キー1行)。
 var helpKeys = [][2]string{
-	{"j k", "down / up"},
+	{"j k", "down / up one row"},
 	{"gg G", "first / last dated entry"},
-	{"C-d C-u", "half page down / up"},
-	{"h l Tab", "column (= the file new entries go to)"},
-	{"+ -", "finer / coarser scale (hour day month year)"},
-	{"t", "now"},
-	{"Enter o", "open the cell: pick its entries one by one"},
-	{"Space i", "read the text and memo in full"},
-	{"u", "next entry without a time (give it one with s)"},
-	{"f F", "next / previous free time of this column"},
-	{"a", "quick add (no date)"},
+	{"C-d C-u", "half a page down / up"},
+	{"h l Tab", "move to the person (file) on the left / right; new entries go to the selected one"},
+	{"1 2 3 4", "scale: hour / day / month / year (also + finer, - coarser)"},
+	{"t", "back to now"},
+	{"u", "jump to the next entry that still has no time (give it one with s)"},
+	{"f F", "jump to the next / previous free time of the selected person"},
+	{"/ n N", "find (fuzzy, text and memo), next, previous"},
+	{"Space i", "read the selected entry's text and memo in full"},
+	{"Enter o", "list the selected cell's entries with their dates (when a cell holds several)"},
+	{"a", "add without a date"},
 	{"A", "add at this row (or at the free time f found)"},
 	{"e", "edit the text"},
-	{"m M", "edit the memo on one line / in the editor"},
 	{"s", "set the date and time"},
+	{"m M", "edit the memo: m on one line, M in the editor"},
+	{"E", "edit the selected entry in the editor (date and time, text, memo)"},
+	{"O", "open the whole file in the editor at this line"},
 	{"x", "delete"},
-	{"E", "open the file in the editor at this line"},
-	{"v", "show / hide [done] [canceled]"},
-	{"/ n N", "find (text and memo), next, previous"},
+	{"v", "show / hide entries starting with [done] or [canceled]"},
 	{"r", "reload the files"},
 	{"?", "this help"},
 	{"q", "quit"},
