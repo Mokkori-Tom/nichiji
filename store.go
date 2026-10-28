@@ -205,10 +205,43 @@ func canon(s string) (string, bool) {
 
 var ()
 
+var reAMPM = regexp.MustCompile(`(?i)\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b`)
+
+// ampm は 2pm / 2:30pm / 10am を 24時間の 14:00 などにする。
+func ampm(s string) string {
+	return reAMPM.ReplaceAllStringFunc(s, func(x string) string {
+		m := reAMPM.FindStringSubmatch(x)
+		h, _ := strconv.Atoi(m[1])
+		mm := 0
+		if m[2] != "" {
+			mm, _ = strconv.Atoi(m[2])
+		}
+		if h == 12 {
+			h = 0
+		}
+		if strings.EqualFold(m[3], "pm") {
+			h += 12
+		}
+		return fmt.Sprintf("%02d:%02d", h, mm)
+	})
+}
+
+// splitWhen は「日時 内容」の先頭の日時を切り出す(先頭の2語、無ければ1語を日時として試す)。
+func splitWhen(s string, base time.Time) (raw, text string, ok bool) {
+	fs := strings.Fields(s)
+	for n := min(3, len(fs)-1); n >= 1; n-- {
+		w := strings.Join(fs[:n], " ")
+		if r, err := parseInput(w, base); err == nil && r != "" {
+			return r, strings.Join(fs[n:], " "), true
+		}
+	}
+	return "", s, false
+}
+
 // parseInput は人が打つ日時を正規化する。
 // 空=未定 / 2026-10-25 14:00 / 10/25 14:00 / 10/25 / 14:00(base の日) / +3 / +3 9:00(今日から)
 func parseInput(s string, base time.Time) (string, error) {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "/", "-"))
+	s = strings.TrimSpace(strings.ReplaceAll(ampm(s), "/", "-"))
 	if s == "" {
 		return "", nil
 	}

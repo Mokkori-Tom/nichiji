@@ -80,7 +80,7 @@ func main() {
 	od := fs.Bool("overdue", false, "ls: only LATE entries; exit 1 if any")
 	lmemo := fs.Bool("memo", false, "ls: show memos (default: only a * mark)")
 	before := fs.Int("before", 10, "notify: minutes before start")
-	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / terminal)")
+	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / Windows toast on WSL / terminal)")
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
 	ver := fs.Bool("version", false, "print the version")
 	fs.Parse(args)
@@ -114,6 +114,11 @@ func main() {
 		if text == "" {
 			fs.Usage()
 			os.Exit(2)
+		}
+		if *when == "" { // 「10/30 19:00 飲み会」のように先頭に日時があればそれを使う
+			if r, t, ok := splitWhen(text, now()); ok {
+				*when, text = r, t
+			}
 		}
 		raw, err := parseInput(*when, now())
 		if err == nil {

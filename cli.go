@@ -122,7 +122,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, m
 	}
 	var us []*Entry
 	for _, e := range m.all() {
-		if e.Kind == kUndef {
+		if e.Kind == kUndef && !isDone(e) { // 済んだ予定は未定に数えない
 			us = append(us, e)
 		}
 	}

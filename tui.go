@@ -89,14 +89,15 @@ type model struct {
 	freeAt   time.Time      // f で選んでいる空きの始まり(A でここに足す)。ゼロなら無し
 	freeGaps [][2]time.Time // f / F で巡る空きの一覧(終わりがゼロの最後の1つは「ここから先ずっと」)
 	freeIdx  int
-	memoView bool // 選んだ予定の内容とメモを全文で見ている
+	reg      *Entry // y / x で取った予定(p で貼る)。file は持たない
+	memoView bool   // 選んだ予定の内容とメモを全文で見ている
 	memoOff  int
 	listMemo bool // ls 用: メモ本文も出す
 }
 
 var (
 	stSel   = lipgloss.NewStyle().Reverse(true)
-	stDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	stDim   = lipgloss.NewStyle() // 灰色は透過の背景で見えなくなるので使わない(見分けは └ などの印で)
 	stHead  = lipgloss.NewStyle().Bold(true)
 	stToday = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	stWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -270,6 +271,87 @@ func (m *model) showFree(f *File, st, end time.Time) {
 		when = st.Format("01-02 15:04") + " - " + end.Format("01-02 15:04") // 0時をまたぐ空き
 	}
 	m.msg = fmt.Sprintf("free %s %s %s (%s)  A add here, f next, F back", pos, f.Name(), when, durLabel(end.Sub(st)))
+}
+
+// copyEntry は y / x で取っておく写し(元のファイルとは切り離す)。
+func copyEntry(e *Entry) *Entry {
+	c := *e
+	c.file, c.src, c.line = nil, "", 0
+	return &c
+}
+
+// paste は p: 取っておいた予定を、カーソルの行の日時・選んでいる列(人)に貼る。
+// 時刻の行ならその時刻(長さは元のまま)、日付の行ならその日(元に時刻があれば同じ時刻)、未定の行なら未定。
+func (m *model) paste() {
+	if m.reg == nil {
+		m.msg = "nothing to paste (y to copy, x to cut)"
+		return
+	}
+	if m.level >= lvMonth {
+		m.msg = "use the hour or day scale to paste"
+		return
+	}
+	r, ok := m.curRow()
+	if !ok {
+		r = trow{date: day(now()), slot: slotAll}
+	}
+	src := m.reg
+	f := m.files[m.target]
+	e := &Entry{Text: src.Text, Memo: src.Memo, file: f}
+	// 元の時刻と長さ
+	startMin, length := -1, time.Duration(0)
+	switch src.Kind {
+	case kTime:
+		startMin = mins(src.At, day(src.At))
+		if !src.End.IsZero() {
+			length = src.End.Sub(src.At)
+		}
+	case kRepeat:
+		if src.min >= 0 {
+			startMin = src.min
+			if src.emin >= 0 {
+				length = endAt(day(now()).Add(time.Duration(src.min)*time.Minute), src.emin).Sub(day(now()).Add(time.Duration(src.min) * time.Minute))
+			}
+		}
+	}
+	var at time.Time
+	switch {
+	case r.slot == slotUndef:
+	case r.slot >= 0:
+		at = m.rowTime(r)
+	case startMin >= 0:
+		at = r.date.Add(time.Duration(startMin) * time.Minute)
+	default:
+		e.setRaw(formatWhen(r.date, kDate))
+	}
+	if !at.IsZero() {
+		raw := formatWhen(at, kTime)
+		if length > 0 {
+			end := at.Add(length)
+			mm := mins(end, day(end))
+			raw += fmt.Sprintf("-%02d:%02d", mm/60, mm%60)
+		}
+		e.setRaw(raw)
+	}
+	if o, bad := e.clash(f); bad {
+		m.msg = "not pasted: " + clashMsg(o).Error()
+		return
+	}
+	f.add(e)
+	m.commit(f)
+	m.focus(e)
+	m.msg = "pasted: " + short(e.Text, 30) + " " + e.Raw
+}
+
+// undatedOnly は日時の無い予定(済んでいない、label のファイルは除く)。見出しの下に固定で出す。
+func (m *model) undatedOnly() []*Entry {
+	var out []*Entry
+	for _, e := range undatedEntries(m.files) {
+		if e.Kind == kUndef {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、
@@ -1112,6 +1194,13 @@ func (m *model) updateInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			f := m.files[m.target]
 			e := &Entry{Text: val, file: f}
+			if m.inMode == inQuick {
+				// 先頭に日時があればその日時で(10/30 19:00-21:00 飲み会、+3 歯医者)
+				if raw, text, ok := splitWhen(val, m.anchor); ok {
+					e.Text = text
+					e.setRaw(raw)
+				}
+			}
 			if m.inMode == inSlot {
 				r := m.inRow
 				switch {
@@ -1234,6 +1323,9 @@ func sortByWhen(es []*Entry) {
 
 func (m *model) bodyH() int {
 	h := m.h - 4 // 見出し・列名・状態・操作ヒント
+	if len(m.undatedOnly()) > 0 {
+		h-- // 未定の固定の行
+	}
 	if m.inMode != inNone && m.inMode != inDelete && (m.msg != "" || m.hint != "") {
 		h--
 	}
@@ -1376,7 +1468,7 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "u":
 		m.jumpUntimed()
 	case "a":
-		m.startInput(inQuick, "quick (no date)> ", "")
+		m.startInput(inQuick, "add (when optional)> ", "")
 	case "f":
 		m.jumpFree(1)
 	case "F":
@@ -1400,6 +1492,15 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			at = formatWhen(r.date, kDate)
 		}
 		m.startInput(inSlot, at+" > ", "")
+	case "y":
+		if e, why := m.curEntry(); e == nil {
+			m.msg = why
+		} else {
+			m.reg = copyEntry(e)
+			m.msg = "copied: " + short(e.Text, 30) + "  (move and p to paste)"
+		}
+	case "p":
+		m.paste()
 	case "e", "m", "s", "x":
 		e, why := m.curEntry()
 		if e == nil {
@@ -1427,7 +1528,13 @@ func (m *model) updateKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.startInput(inWhen, "when> ", pre)
 			m.hint = "e.g. 10/25 14:00-15:00 | 14:00 | +3 | */12/25 | w=sun 10:00 | empty = undated"
 		case "x":
-			m.inMode = inDelete
+			// 切り取り: 消して取っておく(p で貼れる)。確認は出さない(貼り直せば戻る)
+			m.reg = copyEntry(e)
+			e.file.remove(e)
+			m.commit(e.file)
+			m.refreshPick(nil)
+			m.clamp()
+			m.msg = "cut: " + short(e.Text, 30) + "  (p to paste)"
 		}
 	case "M":
 		// メモだけを一時ファイルにしてエディタで開く(改行も日本語入力もエディタのまま)
@@ -1735,18 +1842,6 @@ func (m *model) View() string {
 	crumb := m.crumb()
 	cws := colWidths(natural, m.w-lw)
 
-	done := "done:hidden"
-	if !m.hideDone {
-		done = "done:shown"
-	}
-	var lvs []seg
-	for i, nm := range lvNames {
-		st := stDim
-		if i == m.level {
-			st = stHead
-		}
-		lvs = append(lvs, seg{" " + nm, st})
-	}
 	// 見出し: 目盛り・画面の一番上の位置(年から)・今の時刻
 	pos := seg{"", stPlain}
 	if crumb != "" {
@@ -1756,14 +1851,24 @@ func (m *model) View() string {
 	if n := len(undatedEntries(m.files)); n > 0 {
 		und.s = fmt.Sprintf("  no time:%d", n) // 決めるまで出し続ける
 	}
-	title := line(append(append([]seg{{"nichiji ", stHead}}, lvs...),
-		pos, und, seg{"  " + done, stDim}, seg{"  now " + now().Format("2006-01-02 15:04"), stToday}), m.w, false)
-	if m.w < 70 { // 狭い画面: 目盛り・位置・今の時刻だけ
-		segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}, pos, und}
-		if !m.hideDone {
-			segs = append(segs, seg{"  +done", stDim})
+	// 見出し: 今の目盛りだけ・画面の一番上の位置・時刻の無い予定の数・今の時刻
+	segs := []seg{{"nichiji ", stHead}, {lvNames[m.level], stHead}, pos, und}
+	if !m.hideDone {
+		segs = append(segs, seg{"  +done", stPlain})
+	}
+	clock := "15:04"
+	if m.w >= 70 {
+		clock = "2006-01-02 15:04"
+	}
+	title := line(append(segs, seg{"  now " + now().Format(clock), stToday}), m.w, false)
+	// 未定はいつも見えるように、見出しの下に固定で1行(カーソルは入らない。移るのは u)
+	pin := ""
+	if us := m.undatedOnly(); len(us) > 0 {
+		var ts []string
+		for _, e := range us {
+			ts = append(ts, strings.ReplaceAll(e.Text, "\n", " "))
 		}
-		title = line(append(segs, seg{"  now " + now().Format("15:04"), stToday}), m.w, false)
+		pin = "\n" + line([]seg{{fmt.Sprintf("undated %d: ", len(us)), stWarn}, {strings.Join(ts, " / "), stPlain}}, m.w, false)
 	}
 
 	hdr := strings.Repeat(" ", lw)
@@ -1841,7 +1946,7 @@ func (m *model) View() string {
 	for len(body) < bodyH {
 		body = append(body, "")
 	}
-	return title + "\n" + hdr + "\n" + strings.Join(body[:bodyH], "\n") + "\n" + m.footer()
+	return title + pin + "\n" + hdr + "\n" + strings.Join(body[:bodyH], "\n") + "\n" + m.footer()
 }
 
 // wrap は幅に合わせて折り返す(改行はそのまま改行)。
@@ -1935,7 +2040,7 @@ func (m *model) status() string {
 	return s
 }
 
-const hintShort = "j/k move h/l person 1-4 scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when x del d done E editor v done / find ? help q quit"
+const hintShort = "j/k move h/l person 1-4 scale Enter open Space memo u no-time f free t now a quick A add e text m edit memo s when y/x/p copy/cut/paste d done E editor v done / find ? help q quit"
 
 // helpKeys は ? で出すキーの一覧(1キー1行)。
 var helpKeys = [][2]string{
@@ -1950,14 +2055,14 @@ var helpKeys = [][2]string{
 	{"/ n N", "find in the selected person's entries (fuzzy, text and memo), next, previous"},
 	{"Space i", "read the selected entry's text and memo in full"},
 	{"Enter o", "list the selected cell's entries with their dates (when a cell holds several)"},
-	{"a", "add without a date"},
+	{"a", "add: \"10/30 19:00-21:00 dinner\", \"+3 dentist\", or just text (undated)"},
 	{"A", "add at this row (or at the free time f found)"},
 	{"e", "edit the text"},
 	{"s", "set the date and time"},
 	{"m M", "edit the memo: m on one line, M in the editor"},
 	{"E", "edit the selected entry in the editor (date and time, text, memo)"},
 	{"O", "open the whole file in the editor at this line"},
-	{"x", "delete"},
+	{"y x p", "copy / cut / paste the entry (paste goes to the cursor's row and person)"},
 	{"d", "mark the entry done (it disappears; press again to undo)"},
 	{"v", "show / hide the done and canceled entries"},
 	{"r", "reload the files"},

@@ -116,7 +116,7 @@ func saveState(p string, st map[string]time.Time) error {
 }
 
 // send は通知を出す。-cmd があればそれに題と本文を引数で渡す。
-// 無ければ termux-notification → notify-send の順に探し、どちらも無ければ端末に出してベルを鳴らす。
+// 無ければ termux-notification → notify-send → (WSL なら) Windows の通知、の順に探し、どれも無ければ端末に出してベルを鳴らす。
 func send(cmd string, nt notice) error {
 	title := "nichiji: " + nt.title
 	if cmd != "" {
@@ -131,9 +131,32 @@ func send(cmd string, nt notice) error {
 	if p, err := exec.LookPath("notify-send"); err == nil {
 		return exec.Command(p, title, nt.body).Run()
 	}
+	if isWSL() {
+		if p, err := exec.LookPath("powershell.exe"); err == nil {
+			// WSL: Windows の通知(トースト)。文字は環境変数で渡して、引用の崩れを避ける
+			c := exec.Command(p, "-NoProfile", "-NonInteractive", "-Command", wslToast)
+			c.Env = append(os.Environ(), "NJ_TITLE="+title, "NJ_BODY="+nt.body, "WSLENV=NJ_TITLE/u:NJ_BODY/u")
+			return c.Run()
+		}
+	}
 	_, err := fmt.Printf("\a%s  %s  %s\n", now().Format("15:04"), title, nt.body)
 	return err
 }
+
+// isWSL は WSL の中で動いているか。
+func isWSL() bool {
+	b, err := os.ReadFile("/proc/version")
+	return err == nil && strings.Contains(strings.ToLower(string(b)), "microsoft")
+}
+
+// wslToast は PowerShell から Windows のトーストを出す(追加のモジュールは要らない)。
+const wslToast = `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$x = $t.GetElementsByTagName('text')
+$x.Item(0).AppendChild($t.CreateTextNode($env:NJ_TITLE)) > $null
+$x.Item(1).AppendChild($t.CreateTextNode($env:NJ_BODY)) > $null
+$id = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show([Windows.UI.Notifications.ToastNotification]::new($t))`
 
 func notifyOnce(paths []string, before int, cmd string) error {
 	var files []*File
