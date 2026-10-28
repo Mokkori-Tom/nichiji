@@ -354,7 +354,7 @@ func (m *model) undatedOnly() []*Entry {
 	return out
 }
 
-// jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を日付の近い順(未定は最後)に、
+// jumpUntimed は u: 時刻の決まっていない予定へ移る。全員の分を、未定を先に、あとは日付の近い順に、
 // 押すたびに次へ巡る。移った先の列も選ぶので、誰の予定か分かる。時刻は s で決める。
 func (m *model) jumpUntimed() {
 	var all []*Entry
@@ -377,7 +377,7 @@ func (m *model) jumpUntimed() {
 				}
 			}
 		}
-		return time.Date(9999, 1, 1, 0, 0, 0, 0, time.Local)
+		return time.Time{} // 未定は先頭(見出しの下の固定の行に見えているものへ、u 1回で行ける)
 	}
 	sort.SliceStable(all, func(i, j int) bool { return key(all[i]).Before(key(all[j])) })
 	next := 0
@@ -2050,7 +2050,7 @@ var helpKeys = [][2]string{
 	{"h l Tab", "move to the person (file) on the left / right; new entries go to the selected one"},
 	{"1 2 3 4", "scale: hour / day / month / year (also + finer, - coarser)"},
 	{"t", "back to now"},
-	{"u", "jump to the next entry that still has no time (give it one with s)"},
+	{"u", "jump to the next entry with no time: undated first, then by date (give it one with s)"},
 	{"f F", "jump to the next / previous free time of the selected person"},
 	{"/ n N", "find in the selected person's entries (fuzzy, text and memo), next, previous"},
 	{"Space i", "read the selected entry's text and memo in full"},
