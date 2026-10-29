@@ -7,34 +7,35 @@ import (
 	"runtime/debug"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
 )
 
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
 
-  nichiji [FILE|DIR ...]                       TUI: one vertical table, rows = datetimes, columns = files
-  nichiji ls [-days 14] [-past 0] [-u] [-memo] [-full] [FILE ...]  list upcoming entries (* = has a memo; -full = do not cut to the width)
+  nichiji [ls] [-days 14] [-past 0] [-u] [-memo] [-full] [FILE|DIR ...]   list upcoming entries (* = has a memo)
+  nichiji ls -notime [FILE ...]                entries without a time (undated first, then by date); exit 1 if any
   nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
   nichiji check [FILE ...]                     report unreadable dates, overlaps, LATE, broken records, 4+ columns; exit 1 if any
-  nichiji find WORD [FILE ...]                 search text and memo of all entries; exit 1 if none
-  nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry; no -d = undated
+  nichiji find WORD [FILE ...]                 fuzzy search of text and memo; exit 1 if none
+  nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry ("10/30 19:00 dinner" works too); no time = undated
   nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
                                                rewrite one entry (refused if it overlaps)
   nichiji done -f FILE (-match WORD | -at WHEN) [-note TEXT]  = set -status done -end now
+  nichiji rm -f FILE (-match WORD | -at WHEN)  remove one entry
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
                                                notify before start and when LATE (once each), and daily about entries without a time
   common: -now "2026-12-24 10:00"   pretend it is this time;  nichiji -version
   options go before the files; an option a command does not use is an error
+  to edit by hand, open the CSV in your editor and run nichiji check afterwards
 
-WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | +3 | +3 9:00 | empty = undated
+WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | 2pm | +3 | +3 9:00 | empty = undated
 repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age) w=sun 10:00-11:00 (weekly)
         d=1|d=15 (monthly) w=sat&b=1 (last Saturday) m=1&w=mon&a=2 (2nd Monday of January)
 every entry is a slot of time: undated, date-only and untimed repeats are "no time" until you give them a time
 entries with a time may not overlap within one file (different files may)
-CSV per RFC 4180: quote cells with commas or line breaks; a "# nichiji: label" line makes a file a label column (e.g. weekdays)
-leading [reserved] [running] = open, [done] [canceled] = closed (hidden in the TUI, v to show)
+CSV per RFC 4180: quote cells with commas or line breaks; a "# nichiji: label" line makes a file a label (e.g. weekdays)
+leading [reserved] [running] = open, [done] [canceled] = closed
 blank lines and lines starting with # are ignored and kept as they are
 default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
 `
@@ -53,7 +54,7 @@ func main() {
 	runewidth.DefaultCondition.EastAsianWidth = os.Getenv("NICHIJI_AMBIGUOUS_WIDE") == "1"
 	sub := ""
 	args := os.Args[1:]
-	if len(args) > 0 && strings.Contains(" add ls free set done find notify check ", " "+args[0]+" ") {
+	if len(args) > 0 && strings.Contains(" add ls free set done rm find notify check ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
@@ -79,6 +80,7 @@ func main() {
 	full := fs.Bool("full", false, "ls: do not cut lines to the terminal width")
 	od := fs.Bool("overdue", false, "ls: only LATE entries; exit 1 if any")
 	lmemo := fs.Bool("memo", false, "ls: show memos (default: only a * mark)")
+	notime := fs.Bool("notime", false, "ls: only entries without a time (undated, date-only, untimed repeats)")
 	before := fs.Int("before", 10, "notify: minutes before start")
 	ncmd := fs.String("cmd", "", "notify: command to run with title and body (default termux-notification / notify-send / Windows toast on WSL / terminal)")
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
@@ -95,6 +97,21 @@ func main() {
 		}
 	}
 	switch sub {
+	case "rm":
+		f, err := load(*file)
+		if err == nil {
+			var e *Entry
+			if e, err = findEntry(f, so.match, so.at); err == nil {
+				f.remove(e)
+				if err = save(f); err == nil {
+					fmt.Println("removed:", e.Raw, short(e.Text, 60))
+				}
+			}
+		}
+		if err != nil {
+			die(err)
+		}
+		return
 	case "set", "done":
 		if sub == "done" {
 			so.st = "done"
@@ -185,8 +202,13 @@ func main() {
 		}
 		files = append(files, f)
 	}
-	if sub == "ls" {
-		if *od {
+	if sub == "ls" || sub == "" { // コマンドを付けなければ ls と同じ(TUI は無くした)
+		switch {
+		case *notime:
+			if listNoTime(os.Stdout, files) > 0 {
+				os.Exit(1)
+			}
+		case *od:
 			// 期限切れは過去にあるので、-past を指定しなければ30日前から見る
 			p := *past
 			if p == 0 {
@@ -195,9 +217,9 @@ func main() {
 			if list(os.Stdout, files, p, 0, false, !*full, true, *lmemo) > 0 {
 				os.Exit(1)
 			}
-			return
+		default:
+			list(os.Stdout, files, *past, *days, *undef, !*full, false, *lmemo)
 		}
-		list(os.Stdout, files, *past, *days, *undef, !*full, false, *lmemo)
 		return
 	}
 	if sub == "check" {
@@ -215,16 +237,13 @@ func main() {
 		freeList(os.Stdout, files, *days, from, to, *length)
 		return
 	}
-	m := newModel(files)
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
-		die(err)
-	}
 }
 
 // allowed はコマンドごとに使えるオプション(-now はどれでも)。関係の無いものは打ち間違いとして止める。
 var allowed = map[string]string{
-	"":       "",
-	"ls":     "days past u memo full overdue",
+	"":       "days past u memo full overdue notime",
+	"ls":     "days past u memo full overdue notime",
+	"rm":     "f match at",
 	"check":  "",
 	"find":   "",
 	"add":    "f d m",
@@ -237,7 +256,7 @@ var allowed = map[string]string{
 func checkFlags(fs *flag.FlagSet, sub string) {
 	name := sub
 	if name == "" {
-		name = "the TUI"
+		name = "ls"
 	}
 	ok := " now " + allowed[sub] + " "
 	fs.Visit(func(fl *flag.Flag) {

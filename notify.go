@@ -71,7 +71,7 @@ func dueNotices(files []*File, before int) []notice {
 	// 時刻の無い予定(未定・日付だけ・時刻の無い繰り返し)があれば1日1回だけ促す
 	if us := undatedEntries(files); len(us) > 0 {
 		out = append(out, notice{"undated|" + day(n).Format("2006-01-02"),
-			fmt.Sprintf("%d entries have no time: schedule them", len(us)), "first: " + short(us[0].Text, 40) + "  (nichiji: press u)"})
+			fmt.Sprintf("%d entries have no time: schedule them", len(us)), "first: " + short(us[0].Text, 40) + "  (nichiji ls -notime)"})
 	}
 	return out
 }

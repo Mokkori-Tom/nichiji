@@ -1,10 +1,10 @@
 # nichiji
 
-CSV(`日時,内容,メモ`)で動く、端末向けの小さな予定表です。
+CSV(`日時,内容,メモ`)で動く、コマンドラインの小さな予定表です。画面(TUI)は持たず、編集は好きなエディタで CSV を直接、確認とよく使う操作はコマンドで。
 
 - 1ファイル = 1人か1台。同じファイルの中で時間が重なる予定は入れられない
 - 予定はどれも、実際に動くための時間枠。時刻の決まっていない予定は、決めるまで促す
-- 画面は縦の表1つ(行が日時、列がファイル)。曜日や祝日もただの CSV として並べる
+- 曜日や祝日もただの CSV として一緒に並べる
 
 ## 入れ方
 
@@ -15,10 +15,11 @@ go install github.com/Mokkori-Tom/nichiji@latest
 ## 使い方
 
 ```sh
-nichiji examples/曜日.csv tom.csv hana.csv   # TUI(? でキーの一覧)
-nichiji ls tom.csv                            # 直近の予定
-nichiji add -f tom.csv -d '10/30 19:00-21:00' 飲み会
-nichiji -h                                    # ほかのコマンド(check / find / set / done / free / notify)
+nichiji examples/曜日.csv tom.csv hana.csv   # 直近の予定(nichiji ls と同じ)
+nichiji ls -notime tom.csv                    # 時刻の決まっていない予定
+nichiji add -f tom.csv '10/30 19:00-21:00 飲み会'
+nichiji check tom.csv                         # エディタで書き換えたあとの確認
+nichiji -h                                    # ほかのコマンド(find / set / done / rm / free / notify)
 ```
 
 ## CSV

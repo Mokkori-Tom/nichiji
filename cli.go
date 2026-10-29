@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ func setNow(s string) error {
 }
 
 // listSegs は ls の1件。印(! / LATE)は grep できるよう英字のまま本文の前に置く。
-func (m *model) listSegs(o occ) []seg {
+func (m *lister) listSegs(o occ) []seg {
 	e := o.e
 	when := "undated"
 	switch {
@@ -85,7 +86,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, m
 		}
 		return render(segs)
 	}
-	m := &model{files: files, listMemo: memo}
+	m := &lister{files: files, listMemo: memo}
 	today := day(now())
 	n := 0
 	for i := -past; i <= days; i++ {
@@ -127,7 +128,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, m
 		}
 	}
 	if nt := len(undatedEntries(files)); nt > 0 {
-		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d entries have no time: schedule them (u in the TUI)", nt)))
+		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d entries have no time: schedule them (nichiji ls -notime)", nt)))
 	}
 	if len(us) == 0 {
 		return n
@@ -187,4 +188,36 @@ func endLabel(s, e time.Time) string {
 		return "24:00"
 	}
 	return e.Format("15:04")
+}
+
+// listNoTime は時刻の決まっていない予定を、未定を先に、あとは日付の近い順に出す。件数を返す。
+func listNoTime(w io.Writer, files []*File) int {
+	es := undatedEntries(files)
+	sortByWhen(es)
+	for _, e := range es {
+		when := e.Raw
+		if when == "" {
+			when = "undated"
+		}
+		fmt.Fprintf(w, "%s:%d  %s  %s\n", e.file.Name(), e.line, when, strings.ReplaceAll(e.Text, "\n", "⏎"))
+	}
+	return len(es)
+}
+
+// sortByWhen は未定を先に、あとは日付の近い順(繰り返しは今日以降の次の回)。
+func sortByWhen(es []*Entry) {
+	key := func(e *Entry) time.Time {
+		switch e.Kind {
+		case kDate, kTime:
+			return e.At
+		case kRepeat:
+			for d, i := day(now()), 0; i < 400; d, i = d.AddDate(0, 0, 1), i+1 {
+				if _, ok := e.on(d); ok {
+					return d
+				}
+			}
+		}
+		return time.Time{}
+	}
+	sort.SliceStable(es, func(i, j int) bool { return key(es[i]).Before(key(es[j])) })
 }
