@@ -1,0 +1,13 @@
+#!/bin/sh
+# nichiji notify -cmd から呼ぶ通知スクリプト。履歴に残して tmux のステータスラインに出す。
+log="$HOME/.local/state/tmux-notify.log"
+msg=$(printf '%s' "$*" | tr '\n' ' ')
+mkdir -p "$(dirname "$log")"
+printf '%s  %s\n' "$(date '+%m/%d %H:%M')" "$msg" >> "$log"
+# 予定の通知とそれ以外は別の枠に出す(互いに上書きしない)
+case "$msg" in
+  nichiji:*) slot=@notify_nichiji ;;
+  *) slot=@notify ;;
+esac
+# tmux が止まっていても失敗にしない(失敗すると nichiji が毎分送り直し、履歴が増える)
+tmux set -g "$slot" "$msg" 2>/dev/null || true

@@ -38,6 +38,24 @@ w=日 10:00-11:00,教会
 - `# nichiji: label` の行があるファイル(曜日など)は、ほかの予定がある日に添えるだけ
 - ファイルを並べ替えるなら、セルの中の改行を壊さないツールで(例: `mlr --csv -N --allow-ragged-csv-input --pass-comments sort -f 1`)
 
+## tmux に通知する
+
+`nichiji notify` は `-cmd` のコマンドに題と本文を引数で渡す。始まる10分前(`-before` で変更)に、tmux のステータスラインと履歴へ出す例が `examples/` にある。
+
+```sh
+mkdir -p ~/bin ~/.config/systemd/user
+install -m 755 examples/tmux-notify ~/bin/tmux-notify
+install -m 644 examples/nichiji-notify.service ~/.config/systemd/user/
+cat examples/tmux.conf >> ~/.tmux.conf && tmux source-file ~/.tmux.conf
+systemctl --user daemon-reload
+systemctl --user enable --now nichiji-notify.service
+```
+
+- 通知は履歴を開く(`prefix` `N`)まで出たまま。ほかのコマンドも `~/bin/tmux-notify "題"` で同じ履歴に残せる
+- `-cmd` の値は空白で区切られるので、パスに空白を入れない
+- サービスで動かすときは、`nichiji-notify.service` の `PATH` に tmux の場所を入れる
+- ログインしている間だけ動く
+
 ## ライセンス
 
 MIT

@@ -1,0 +1,13 @@
+# ~/.config/systemd/user/ に置く。tmux-notify は ~/bin/ に置いて実行できるようにする
+[Unit]
+Description=nichiji schedule notifications to tmux
+
+[Service]
+# tmux のある場所を含める(which tmux で確認)
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/go/bin/nichiji notify -watch -cmd %h/bin/tmux-notify
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
