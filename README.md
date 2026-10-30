@@ -22,6 +22,14 @@ nichiji check tom.csv                         # エディタで書き換えた�
 nichiji -h                                    # ほかのコマンド(find / set / done / rm / free / notify)
 ```
 
+`-f` を省くと既定のファイル(`$NICHIJI_FILE` か `~/.local/share/nichiji/nichiji.csv`)を使う。
+
+タブ補完(bash)はコマンド、オプション、`-match` の内容、`-at` の日時に効く。
+
+```sh
+echo 'eval "$(nichiji completion bash)"' >> ~/.bashrc
+```
+
 ## CSV
 
 ```csv

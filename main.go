@@ -10,31 +10,53 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]). One file = one person or one machine.
+// 80桁の端末で折り返さないよう、1行を79桁までに収める
+const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]).
+One file = one person or one machine.
 
-  nichiji [ls] [-days 14] [-past 0] [-u] [-memo] [-full] [FILE|DIR ...]   list upcoming entries (* = has a memo)
-  nichiji ls -notime [FILE ...]                entries without a time (undated first, then by date); exit 1 if any
-  nichiji ls -overdue [FILE ...]               only LATE entries; exit 1 if any
-  nichiji check [FILE ...]                     report unreadable dates, overlaps, LATE, broken records, 4+ columns; exit 1 if any
-  nichiji find WORD [FILE ...]                 fuzzy search of text and memo; exit 1 if none
-  nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT   append one entry ("10/30 19:00 dinner" works too); no time = undated
-  nichiji set -f FILE (-match WORD | -at WHEN) [-status done] [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT] [-m MEMO] [-force]
-                                               rewrite one entry (refused if it overlaps)
-  nichiji done -f FILE (-match WORD | -at WHEN) [-note TEXT]  = set -status done -end now
-  nichiji rm -f FILE (-match WORD | -at WHEN)  remove one entry
-  nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] FILE ...   gaps where every file is free
+  nichiji [ls] [-days 14] [-past 0] [-u] [-memo] [-full] [FILE|DIR ...]
+      list upcoming entries (* = has a memo)
+  nichiji ls -notime [FILE ...]
+      entries without a time (undated first, then by date); exit 1 if any
+  nichiji ls -overdue [FILE ...]
+      only LATE entries; exit 1 if any
+  nichiji check [FILE ...]
+      report unreadable dates, overlaps, LATE, broken records, 4+ columns;
+      exit 1 if any
+  nichiji find WORD [FILE ...]
+      fuzzy search of text and memo; exit 1 if none
+  nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT
+      append one entry ("10/30 19:00 dinner" works too); no time = undated
+  nichiji set [-f FILE] (-match WORD | -at WHEN) [-status done]
+              [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT]
+              [-m MEMO] [-force]
+      rewrite one entry (refused if it overlaps)
+  nichiji done [-f FILE] (-match WORD | -at WHEN) [-note TEXT]
+      = set -status done -end now
+  nichiji rm [-f FILE] (-match WORD | -at WHEN)
+      remove one entry
+  nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] [FILE ...]
+      gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
-                                               notify before start and when LATE (once each), and daily about entries without a time
+      notify before start and when LATE (once each), and daily about entries
+      without a time
+  nichiji completion bash
+      print tab completion; add to ~/.bashrc: eval "$(nichiji completion bash)"
+
   common: -now "2026-12-24 10:00"   pretend it is this time;  nichiji -version
   options go before the files; an option a command does not use is an error
   to edit by hand, open the CSV in your editor and run nichiji check afterwards
 
-WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | 2pm | +3 | +3 9:00 | empty = undated
-repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age) w=sun 10:00-11:00 (weekly)
-        d=1|d=15 (monthly) w=sat&b=1 (last Saturday) m=1&w=mon&a=2 (2nd Monday of January)
-every entry is a slot of time: undated, date-only and untimed repeats are "no time" until you give them a time
+WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | 2pm | +3
+      | +3 9:00 | empty = undated
+repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age)
+        w=sun 10:00-11:00 (weekly) d=1|d=15 (monthly) w=sat&b=1 (last Saturday)
+        m=1&w=mon&a=2 (2nd Monday of January)
+every entry is a slot of time: undated, date-only and untimed repeats are
+"no time" until you give them a time
 entries with a time may not overlap within one file (different files may)
-CSV per RFC 4180: quote cells with commas or line breaks; a "# nichiji: label" line makes a file a label (e.g. weekdays)
+CSV per RFC 4180: quote cells with commas or line breaks;
+a "# nichiji: label" line makes a file a label (e.g. weekdays)
 leading [reserved] [running] = open, [done] [canceled] = closed
 blank lines and lines starting with # are ignored and kept as they are
 default file: $NICHIJI_FILE or ~/.local/share/nichiji/nichiji.csv
@@ -54,6 +76,14 @@ func main() {
 	runewidth.DefaultCondition.EastAsianWidth = os.Getenv("NICHIJI_AMBIGUOUS_WIDE") == "1"
 	sub := ""
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "__complete" {
+		complete(args[1:])
+		return
+	}
+	if len(args) > 0 && args[0] == "completion" {
+		completion(args[1:])
+		return
+	}
 	if len(args) > 0 && strings.Contains(" add ls free set done rm find notify check ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
