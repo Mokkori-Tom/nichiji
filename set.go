@@ -45,6 +45,8 @@ type setOpts struct {
 	memo          string
 	force         bool
 	softEnd       bool // done: 日時つきの予定のときだけ終わりを今にする
+	// 空でも指定されたか。-d "" は未定に、-m "" はメモ無しにする
+	whenSet, memoSet, textSet bool
 }
 
 // findEntry は -match(内容の部分一致)と -at(開始の日時)で1件に絞る。
@@ -78,6 +80,16 @@ func findEntry(f *File, match, at string) (*Entry, error) {
 		return nil, fmt.Errorf("no matching entry")
 	case 1:
 		return hit[0], nil
+	}
+	// 「会議」と「会議A」があるとき、完全に同じものがあればそれを選ぶ
+	var exact []*Entry
+	for _, e := range hit {
+		if first, _, _ := strings.Cut(e.Text, "\n"); match != "" && first == match {
+			exact = append(exact, e)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d entries match; narrow it down with -at or -match:", len(hit))
@@ -133,8 +145,11 @@ func setEntry(path string, o setOpts) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw := e.Raw
-	if o.when != "" {
+	if o.textSet && o.text == "" {
+		return "", fmt.Errorf("-text cannot be empty (to remove the entry: nichiji rm)")
+	}
+	raw, oldRaw := e.Raw, e.Raw
+	if o.whenSet && o.when != oldRaw { // 補完で入った今の値のままなら書き換えない
 		base := now()
 		if e.Kind == kDate || e.Kind == kTime {
 			base = e.At
@@ -163,14 +178,27 @@ func setEntry(path string, o setOpts) (string, error) {
 		e.setRaw(r)
 	}
 	e.Text = text
-	if o.memo != "" {
+	if o.memoSet {
 		e.Memo = o.memo
 	}
-	if c, bad := e.clash(f); bad && !o.force {
+	// 日時を変えないなら(名前の修正など)、もともとの重なりでは止めない
+	if c, bad := e.clash(f); bad && !o.force && e.Raw != oldRaw {
 		return "", fmt.Errorf("%v (use -force to write anyway)", clashMsg(c))
 	}
 	if err := save(f); err != nil {
 		return "", err
 	}
-	return e.Raw + "  " + short(e.Text, 60), nil
+	return setWhen(e) + "  " + short(e.Text, 60), nil
+}
+
+// setWhen は書き換えの結果に出す日時。翌日に続く予定は 23:00-22:00 では読めないので、終わりの日付と長さも書く。
+func setWhen(e *Entry) string {
+	if e.Raw == "" {
+		return "undated"
+	}
+	if e.Kind != kTime || !e.End.After(day(e.At).AddDate(0, 0, 1)) {
+		return e.Raw
+	}
+	d := e.End.Sub(e.At)
+	return fmt.Sprintf("%s → %s (%dh%02dm)", formatWhen(e.At, kTime), formatWhen(e.End, kTime), int(d.Hours()), int(d.Minutes())%60)
 }

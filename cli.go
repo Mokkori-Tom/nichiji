@@ -36,7 +36,7 @@ func setNow(s string) error {
 // listSegs は ls の1件。印(! / LATE)は grep できるよう英字のまま本文の前に置く。
 func (m *lister) listSegs(o occ) []seg {
 	e := o.e
-	when := "undated"
+	when := "" // 未定は見出し undated の下に並ぶので、行には書かない
 	switch {
 	case e.Kind == kUndef && e.Raw != "":
 		when = "?" + e.Raw
@@ -47,7 +47,10 @@ func (m *lister) listSegs(o occ) []seg {
 	case e.Kind != kUndef:
 		when = "all-day"
 	}
-	segs := []seg{{"  " + when + " ", stPlain}}
+	if when != "" {
+		when += " "
+	}
+	segs := []seg{{"  " + when, stPlain}}
 	if len(m.files) > 1 {
 		segs = append(segs, seg{"[" + e.file.Name() + "] ", stDim})
 	}
@@ -73,7 +76,7 @@ func (m *lister) listSegs(o occ) []seg {
 
 // list は when の既定表示の真似。予定のある日だけを並べる。
 // list は直近を出す。overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
-func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, memo bool) int {
+func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo bool) int {
 	width := 0 // 0 = 切らない(パイプのときは全文を出す)
 	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {
 		if cw, _, err := term.GetSize(fd); err == nil {
@@ -133,10 +136,7 @@ func list(w io.Writer, files []*File, past, days int, undef, cut, overdueOnly, m
 	if len(us) == 0 {
 		return n
 	}
-	if !undef {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("%d undated (-u to list)", len(us))))
-		return n
-	}
+	// 日時を決める気になるよう、件数だけでなく中身も常に見せる
 	fmt.Fprintln(w, stHead.Render("undated"))
 	for _, e := range us {
 		fmt.Fprintln(w, render(m.listSegs(occ{e: e})))

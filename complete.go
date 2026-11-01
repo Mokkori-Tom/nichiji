@@ -23,6 +23,30 @@ const bashCompletion = `_nichiji() {
 		[[ ${words[i]} == -f ]] && file=${words[i+1]}
 	done
 	file=${file/#\~/$HOME}
+	# set / done / rm: そのまま書いた語は -match と同じ。-all があれば済んだ予定も候補に出す
+	local closed= other= w= n=0
+	case $sub in set | done | rm)
+		for ((i = 2; i < cword; i++)); do
+			case ${words[i]} in
+			-f) ((i++)) ;;
+			-all) closed=all ;;
+			-match) w=${words[i+1]} n=1 && ((i++)) ;;
+			-*) other=1 ;;
+			*) w=${words[i]} && ((n++)) ;;
+			esac
+		done
+		[[ -z $other && $n == 0 && $cur != -* && $prev != -f ]] && prev=-match
+		# 語の後ろにスペースを空けて Tab を押したら、続きの -d -text -m を今の値で出す
+		if [[ $sub == set && -z $cur && -z $other && $n == 1 ]] && ((cword == ${#words[@]} - 1)); then
+			w=${w#[\'\"]} w=${w%[\'\"]} w=${w//\\/}
+			if [[ $w ]] && w=$(nichiji __complete rest "$file" "$w" 2>/dev/null) && [[ $w ]]; then
+				compopt +o filenames +o default -o nospace -o noquote 2>/dev/null
+				COMPREPLY=("$w")
+				return
+			fi
+		fi
+		;;
+	esac
 	local typed=${cur#[\'\"]}
 	typed=${typed//\\/}
 	case $prev in
@@ -30,13 +54,23 @@ const bashCompletion = `_nichiji() {
 		[[ $prev == -match ]] && c=match || c=at
 		compopt -o filenames +o default 2>/dev/null
 		local all=() hit=()
-		while IFS= read -r i; do all+=("$i"); done < <(nichiji __complete "$c" "$file" 2>/dev/null)
+		while IFS= read -r i; do all+=("$i"); done < <(nichiji __complete "$c" "$file" $closed 2>/dev/null)
 		for i in "${all[@]}"; do [[ $i == "$typed"* ]] && hit+=("$i"); done
 		# -match は部分一致なので、先頭で当たらなければ途中も探す
 		if ((${#hit[@]} == 0)); then
 			for i in "${all[@]}"; do [[ $i == *"$typed"* ]] && hit+=("$i"); done
 		fi
 		COMPREPLY=("${hit[@]}")
+		# set の候補は今の日時・内容・メモまで含める。メニューで選んでも全部入るように
+		if [[ $sub == set && $c == match && $cur != [\'\"]* && $typed != *:* ]] && ((cword == ${#words[@]} - 1)) && ((${#hit[@]})); then
+			local full=()
+			while IFS= read -r i; do full+=("$i"); done < <(nichiji __complete expand "$file" "${hit[@]}" 2>/dev/null)
+			if ((${#full[@]})); then
+				compopt +o filenames -o nospace -o noquote 2>/dev/null
+				COMPREPLY=("${full[@]}")
+				return
+			fi
+		fi
 		declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions "$typed"
 		return
 		;;
@@ -49,6 +83,12 @@ const bashCompletion = `_nichiji() {
 		return
 		;;
 	-f | -cmd) return ;; # ファイル名の補完に任せる
+	esac
+	# set / done / rm はファイル名を引数に取らない(-f の値は上で扱う)
+	case $sub in set | done | rm)
+		compopt +o default 2>/dev/null
+		compopt -o ble/no-default 2>/dev/null # ble.sh は +o default だけではファイル名を出す
+		;;
 	esac
 	if [[ $cur == -* ]]; then
 		COMPREPLY=($(compgen -W "$(nichiji __complete flags "$sub" 2>/dev/null)" -- "$cur"))
@@ -78,13 +118,21 @@ func complete(args []string) {
 		for _, name := range strings.Fields(allowed[sub]) {
 			fmt.Println("-" + name)
 		}
+	case "expand", "rest":
+		if len(args) > 2 {
+			expand(path, args[2:], args[0] == "expand")
+		}
 	case "match", "at":
 		f, err := load(path)
 		if err != nil {
 			return
 		}
 		seen := map[string]bool{}
+		showClosed := len(args) > 2 && args[2] == "all"
 		for _, e := range f.Entries() {
+			if isDone(e) && !showClosed { // 済んだ予定は -all のときだけ
+				continue
+			}
 			c := ""
 			if args[0] == "match" {
 				// 複数行の内容は1行目だけ(-match は部分一致なので当たる)
@@ -98,6 +146,50 @@ func complete(args []string) {
 			}
 		}
 	}
+}
+
+// expand は語ごとに、1件に決まる予定を set の続きとして今の値で1行ずつ書き出す。
+// 内容の1行目が同じものを優先し、無ければ部分一致で探す(set の選び方と同じ)。
+// withWord なら先頭に語も付ける(語の途中で Tab を押したときは語ごと置き換えるため)。
+// 決まらない語は、候補が複数なら語だけを出し、1語だけなら何も出さない。
+func expand(path string, words []string, withWord bool) {
+	f, err := load(path)
+	if err != nil {
+		return
+	}
+	for _, word := range words {
+		e, err := findEntry(f, word, "")
+		if err != nil {
+			if withWord && len(words) > 1 {
+				fmt.Println(shWord(word))
+			}
+			continue
+		}
+		if withWord {
+			fmt.Print(shWord(word), " ")
+		}
+		fmt.Println("-d", shQuote(e.Raw), "-text", shQuote(e.Text), "-m", shQuote(e.Memo))
+	}
+}
+
+// shWord は語を \\ で1語にする。引用符で始めないので、打ちかけの語と先頭が揃い、共通部分の補完が効く。
+func shWord(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(" \t'\"\\$`&|;<>()*?[]#~=%!{},^", r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// shQuote はシェルの1語に引用する。改行は1行に収まるよう $'...' で書く。
+func shQuote(s string) string {
+	if strings.ContainsAny(s, "\n\r\t") {
+		return "$'" + strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(s) + "'"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func completion(args []string) {

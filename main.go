@@ -14,8 +14,8 @@ import (
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]).
 One file = one person or one machine.
 
-  nichiji [ls] [-days 14] [-past 0] [-u] [-memo] [-full] [FILE|DIR ...]
-      list upcoming entries (* = has a memo)
+  nichiji [ls] [-days 14] [-past 0] [-memo] [-full] [FILE|DIR ...]
+      list upcoming entries and undated ones (* = has a memo)
   nichiji ls -notime [FILE ...]
       entries without a time (undated first, then by date); exit 1 if any
   nichiji ls -overdue [FILE ...]
@@ -27,13 +27,16 @@ One file = one person or one machine.
       fuzzy search of text and memo; exit 1 if none
   nichiji add [-f FILE] [-d WHEN] [-m MEMO] TEXT
       append one entry ("10/30 19:00 dinner" works too); no time = undated
-  nichiji set [-f FILE] (-match WORD | -at WHEN) [-status done]
+      -f -d -m may also follow TEXT; text after -- is taken as it is
+  nichiji set [-f FILE] (WORD | -match WORD | -at WHEN) [-status done]
               [-end now|+30|15:20] [-d WHEN] [-note TEXT] [-text TEXT]
               [-m MEMO] [-force]
-      rewrite one entry (refused if it overlaps)
-  nichiji done [-f FILE] (-match WORD | -at WHEN) [-note TEXT]
+      rewrite one entry (refused if it overlaps); Tab after WORD fills in
+      the current -d -text -m to overwrite; -d "" = undated, -m "" = no memo
+      Tab skips [done] and [canceled] entries unless -all is given
+  nichiji done [-f FILE] (WORD | -match WORD | -at WHEN) [-note TEXT]
       = set -status done -end now
-  nichiji rm [-f FILE] (-match WORD | -at WHEN)
+  nichiji rm [-f FILE] (WORD | -match WORD | -at WHEN)
       remove one entry
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] [FILE ...]
       gaps where every file is free
@@ -94,7 +97,8 @@ func main() {
 	when := fs.String("d", "", "date/time")
 	days := fs.Int("days", 14, "days ahead")
 	past := fs.Int("past", 0, "days back")
-	undef := fs.Bool("u", false, "ls: also list undated")
+	fs.Bool("all", false, "set/done/rm: Tab also offers [done] and [canceled] entries")
+	fs.Bool("u", false, "ls: no effect, undated entries are always listed (kept for old scripts)")
 	length := fs.Int("len", 60, "free: minutes needed")
 	fromS := fs.String("from", "9:00", "free: day starts")
 	toS := fs.String("to", "18:00", "free: day ends")
@@ -116,6 +120,11 @@ func main() {
 	watch := fs.Bool("watch", false, "notify: keep running, check every minute")
 	ver := fs.Bool("version", false, "print the version")
 	fs.Parse(args)
+	// set / done / rm は語をそのまま書けば -match と同じ。後ろのオプションも読む
+	if (sub == "set" || sub == "done" || sub == "rm") && fs.NArg() > 0 && so.match == "" && so.at == "" {
+		so.match = fs.Arg(0)
+		fs.Parse(fs.Args()[1:])
+	}
 	if *ver {
 		fmt.Println(version())
 		return
@@ -124,6 +133,13 @@ func main() {
 	if *nowS != "" {
 		if err := setNow(*nowS); err != nil {
 			die(err)
+		}
+	}
+	switch sub {
+	case "rm", "set", "done":
+		// 引用し忘れた -d 11/1 23:00 の 23:00 などを黙って捨てない
+		if fs.NArg() > 0 {
+			die(fmt.Errorf("unexpected argument %q: quote a value with spaces (-d \"11/1 23:00\")", fs.Arg(0)))
 		}
 	}
 	switch sub {
@@ -150,6 +166,16 @@ func main() {
 			}
 		}
 		so.when, so.memo = *when, *memo
+		fs.Visit(func(fl *flag.Flag) {
+			switch fl.Name {
+			case "d":
+				so.whenSet = true
+			case "m":
+				so.memoSet = true
+			case "text":
+				so.textSet = true
+			}
+		})
 		out, err := setEntry(*file, so)
 		if err != nil {
 			die(err)
@@ -157,7 +183,18 @@ func main() {
 		fmt.Println(out)
 		return
 	case "add":
-		text := strings.Join(fs.Args(), " ")
+		words := fs.Args()
+		if n := len(args) - fs.NArg(); n == 0 || args[n-1] != "--" {
+			words = addArgs(fs, words)
+		}
+		if *when != "" {
+			for _, w := range words {
+				if reHHMM.MatchString(w) {
+					die(fmt.Errorf("unexpected argument %q: quote a value with spaces (-d \"11/1 23:00\")", w))
+				}
+			}
+		}
+		text := strings.Join(words, " ")
 		if text == "" {
 			fs.Usage()
 			os.Exit(2)
@@ -244,11 +281,11 @@ func main() {
 			if p == 0 {
 				p = 30
 			}
-			if list(os.Stdout, files, p, 0, false, !*full, true, *lmemo) > 0 {
+			if list(os.Stdout, files, p, 0, !*full, true, *lmemo) > 0 {
 				os.Exit(1)
 			}
 		default:
-			list(os.Stdout, files, *past, *days, *undef, !*full, false, *lmemo)
+			list(os.Stdout, files, *past, *days, !*full, false, *lmemo)
 		}
 		return
 	}
@@ -273,14 +310,39 @@ func main() {
 var allowed = map[string]string{
 	"":       "days past u memo full overdue notime",
 	"ls":     "days past u memo full overdue notime",
-	"rm":     "f match at",
+	"rm":     "f match at all",
 	"check":  "",
 	"find":   "",
 	"add":    "f d m",
-	"set":    "f match at end status note text m force d",
-	"done":   "f match at end status note text m force d",
+	"set":    "f match at end status note text m force d all",
+	"done":   "f match at end status note text m force d all",
 	"free":   "len from to days",
 	"notify": "before cmd watch",
+}
+
+// addArgs は add の内容の後ろに書いた -f -d -m をオプションとして読み、残りを内容として返す。
+// -資料 のような語は内容のまま。-d そのものを内容に入れるなら -- の後ろに書く。
+func addArgs(fs *flag.FlagSet, args []string) []string {
+	var words []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(words, args[i+1:]...)
+		}
+		name, val, hasVal := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		if !strings.HasPrefix(a, "-") || (name != "f" && name != "d" && name != "m") {
+			words = append(words, a)
+			continue
+		}
+		if !hasVal {
+			if i++; i == len(args) {
+				die(fmt.Errorf("%s needs a value (to use it as text: nichiji add -- TEXT)", a))
+			}
+			val = args[i]
+		}
+		fs.Set(name, val)
+	}
+	return words
 }
 
 func checkFlags(fs *flag.FlagSet, sub string) {

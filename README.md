@@ -18,17 +18,20 @@ go install github.com/Mokkori-Tom/nichiji@latest
 nichiji examples/曜日.csv tom.csv hana.csv   # 直近の予定(nichiji ls と同じ)
 nichiji ls -notime tom.csv                    # 時刻の決まっていない予定
 nichiji add -f tom.csv '10/30 19:00-21:00 飲み会'
+nichiji set -f tom.csv 飲み<Tab>              # 今の -d -text -m まで展開されるので、直して Enter
 nichiji check tom.csv                         # エディタで書き換えたあとの確認
 nichiji -h                                    # ほかのコマンド(find / set / done / rm / free / notify)
 ```
 
 `-f` を省くと既定のファイル(`$NICHIJI_FILE` か `~/.local/share/nichiji/nichiji.csv`)を使う。
 
-タブ補完(bash)はコマンド、オプション、`-match` の内容、`-at` の日時に効く。
+タブ補完(bash)はコマンド、オプション、`-match` の内容、`-at` の日時に効く。`nichiji set` で1件に決まると、今の日時・内容・メモまで展開する。`[done]` `[canceled]` の予定は、`set` `done` `rm` に `-all` を付けたときだけ候補に出る。
 
 ```sh
 echo 'eval "$(nichiji completion bash)"' >> ~/.bashrc
 ```
+
+展開した行は長くなるので、ble.sh や fish のように複数行を編集できるラインエディタで使うと直しやすい。`nichiji completion` は今のところ bash 用なので、展開を使うなら bash + ble.sh を使う。fish では補完が効かない。
 
 ## CSV
 
