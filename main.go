@@ -43,8 +43,9 @@ One file = one person or one machine.
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
       notify before start and when LATE (once each), and daily about entries
       without a time
-  nichiji completion bash
+  nichiji completion bash|fish
       print tab completion; add to ~/.bashrc: eval "$(nichiji completion bash)"
+      or to config.fish: nichiji completion fish | source
 
   common: -now "2026-12-24 10:00"   pretend it is this time;  nichiji -version
   options go before the files; an option a command does not use is an error

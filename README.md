@@ -25,13 +25,15 @@ nichiji -h                                    # ほかのコマンド(find / set
 
 `-f` を省くと既定のファイル(`$NICHIJI_FILE` か `~/.local/share/nichiji/nichiji.csv`)を使う。
 
-タブ補完(bash)はコマンド、オプション、`-match` の内容、`-at` の日時に効く。`nichiji set` で1件に決まると、今の日時・内容・メモまで展開する。`[done]` `[canceled]` の予定は、`set` `done` `rm` に `-all` を付けたときだけ候補に出る。
+タブ補完(bash / fish)はコマンド、オプション、`-match` の内容、`-at` の日時に効く。`nichiji set` で1件に決まると、今の日時・内容・メモまで展開する。`[done]` `[canceled]` の予定は、`set` `done` `rm` に `-all` を付けたときだけ候補に出る。
 
 ```sh
 echo 'eval "$(nichiji completion bash)"' >> ~/.bashrc
+echo 'nichiji completion fish | source' >> ~/.config/fish/config.fish
 ```
 
-展開した行は長くなるので、ble.sh や fish のように複数行を編集できるラインエディタで使うと直しやすい。`nichiji completion` は今のところ bash 用なので、展開を使うなら bash + ble.sh を使う。fish では補完が効かない。
+展開した行は長くなるので、ble.sh や fish のように複数行を編集できるラインエディタで使うと直しやすい。
+fish では候補の説明に今の日時とメモを出す。展開のために Tab と Enter のキー割り当てを使うので、ほかの設定でこの2つを割り当て直していると展開されない。
 
 ## CSV
 

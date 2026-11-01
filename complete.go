@@ -120,9 +120,13 @@ func complete(args []string) {
 		}
 	case "expand", "rest":
 		if len(args) > 2 {
-			expand(path, args[2:], args[0] == "expand")
+			expand(path, args[2:], args[0] == "expand", shWord, shQuote)
 		}
-	case "match", "at":
+	case "fexpand", "frest":
+		if len(args) > 2 {
+			expand(path, args[2:], args[0] == "fexpand", fishQuote, fishQuote)
+		}
+	case "match", "matchdesc", "at":
 		f, err := load(path)
 		if err != nil {
 			return
@@ -134,7 +138,7 @@ func complete(args []string) {
 				continue
 			}
 			c := ""
-			if args[0] == "match" {
+			if args[0] != "at" {
 				// 複数行の内容は1行目だけ(-match は部分一致なので当たる)
 				c, _, _ = strings.Cut(e.Text, "\n")
 			} else if e.Kind == kDate || e.Kind == kTime { // -at で選べるのは日時のある予定だけ
@@ -142,7 +146,11 @@ func complete(args []string) {
 			}
 			if c != "" && !seen[c] {
 				seen[c] = true
-				fmt.Println(c)
+				if args[0] == "matchdesc" { // fish の候補の説明: 今の日時とメモ
+					fmt.Println(c + "\t" + entryDesc(e))
+				} else {
+					fmt.Println(c)
+				}
 			}
 		}
 	}
@@ -152,7 +160,7 @@ func complete(args []string) {
 // 内容の1行目が同じものを優先し、無ければ部分一致で探す(set の選び方と同じ)。
 // withWord なら先頭に語も付ける(語の途中で Tab を押したときは語ごと置き換えるため)。
 // 決まらない語は、候補が複数なら語だけを出し、1語だけなら何も出さない。
-func expand(path string, words []string, withWord bool) {
+func expand(path string, words []string, withWord bool, qWord, q func(string) string) {
 	f, err := load(path)
 	if err != nil {
 		return
@@ -161,15 +169,27 @@ func expand(path string, words []string, withWord bool) {
 		e, err := findEntry(f, word, "")
 		if err != nil {
 			if withWord && len(words) > 1 {
-				fmt.Println(shWord(word))
+				fmt.Println(qWord(word))
 			}
 			continue
 		}
 		if withWord {
-			fmt.Print(shWord(word), " ")
+			fmt.Print(qWord(word), " ")
 		}
-		fmt.Println("-d", shQuote(e.Raw), "-text", shQuote(e.Text), "-m", shQuote(e.Memo))
+		fmt.Println("-d", q(e.Raw), "-text", q(e.Text), "-m", q(e.Memo))
 	}
+}
+
+// entryDesc は補完の候補に添える説明。1行に収める。
+func entryDesc(e *Entry) string {
+	d := e.Raw
+	if d == "" {
+		d = "undated"
+	}
+	if e.Memo != "" {
+		d += " | " + e.Memo
+	}
+	return strings.NewReplacer("\n", " ", "\t", " ").Replace(d)
 }
 
 // shWord は語を \\ で1語にする。引用符で始めないので、打ちかけの語と先頭が揃い、共通部分の補完が効く。
@@ -193,8 +213,12 @@ func shQuote(s string) string {
 }
 
 func completion(args []string) {
-	if len(args) != 1 || args[0] != "bash" {
-		die(fmt.Errorf("usage: nichiji completion bash"))
+	switch {
+	case len(args) == 1 && args[0] == "bash":
+		os.Stdout.WriteString(bashCompletion)
+	case len(args) == 1 && args[0] == "fish":
+		os.Stdout.WriteString(fishCompletion)
+	default:
+		die(fmt.Errorf("usage: nichiji completion bash|fish"))
 	}
-	fmt.Fprint(os.Stdout, bashCompletion)
 }
