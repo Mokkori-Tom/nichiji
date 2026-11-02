@@ -48,8 +48,8 @@ One file = one person or one machine.
       gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
       notify before start and when LATE (once each), and daily about entries
-      without a time; with no -cmd, shown on every attached tmux client,
-      else as a desktop/phone notification
+      without a time; with no -cmd, shown both on every attached tmux client
+      and as a desktop/phone notification
   nichiji completion bash|fish
       print tab completion; add to ~/.bashrc: eval "$(nichiji completion bash)"
       or to config.fish: nichiji completion fish | source

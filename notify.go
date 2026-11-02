@@ -116,7 +116,7 @@ func saveState(p string, st map[string]time.Time) error {
 }
 
 // send は通知を出す。-cmd があればそれに題と本文を引数で渡す。
-// 無ければ termux-notification → notify-send → (WSL なら) Windows の通知、の順に探し、どれも無ければ端末に出してベルを鳴らす。
+// 無ければデスクトップの通知に出し、それも無ければ端末に出してベルを鳴らす。
 func send(cmd string, nt notice) error {
 	title := "nichiji: " + nt.title
 	if cmd != "" {
@@ -125,25 +125,34 @@ func send(cmd string, nt notice) error {
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		return c.Run()
 	}
-	if p, err := exec.LookPath("termux-notification"); err == nil {
-		return exec.Command(p, "--title", title, "--content", nt.body).Run()
-	}
-	if p, err := exec.LookPath("notify-send"); err == nil {
-		return exec.Command(p, title, nt.body).Run()
-	}
-	if isWSL() {
-		if p, err := exec.LookPath("powershell.exe"); err == nil {
-			// WSL: Windows の通知(トースト)。文字は環境変数で渡して、引用の崩れを避ける
-			c := exec.Command(p, "-NoProfile", "-NonInteractive", "-Command", wslToast)
-			c.Env = append(os.Environ(), "NJ_TITLE="+title, "NJ_BODY="+nt.body, "WSLENV=NJ_TITLE/u:NJ_BODY/u")
-			return c.Run()
-		}
+	if ok, err := desktop(title, nt.body); ok {
+		return err
 	}
 	_, err := fmt.Printf("\a%s  %s  %s\n", now().Format("15:04"), title, nt.body)
 	return err
 }
 
-// tmuxNotify は tmux に繋いでいるすべての画面の下の行に、10秒だけ msg を出す(-cmd が無いときの既定)。
+// desktop は termux-notification → notify-send → (WSL なら) Windows の通知、の順に探して出す。
+// どれも無ければ ok は false。
+func desktop(title, body string) (ok bool, err error) {
+	if p, err := exec.LookPath("termux-notification"); err == nil {
+		return true, exec.Command(p, "--title", title, "--content", body).Run()
+	}
+	if p, err := exec.LookPath("notify-send"); err == nil {
+		return true, exec.Command(p, title, body).Run()
+	}
+	if isWSL() {
+		if p, err := exec.LookPath("powershell.exe"); err == nil {
+			// WSL: Windows の通知(トースト)。文字は環境変数で渡して、引用の崩れを避ける
+			c := exec.Command(p, "-NoProfile", "-NonInteractive", "-Command", wslToast)
+			c.Env = append(os.Environ(), "NJ_TITLE="+title, "NJ_BODY="+body, "WSLENV=NJ_TITLE/u:NJ_BODY/u")
+			return true, c.Run()
+		}
+	}
+	return false, nil
+}
+
+// tmuxNotify は tmux に繋いでいるすべての画面の下の行に、10秒だけ msg を出す(-cmd が無いときは、デスクトップの通知と両方に出す)。
 // cron などから呼んでも届くよう、$TMUX ではなく繋いでいる画面の有無で決める。出せなければ false。
 func tmuxNotify(msg string) bool {
 	p, err := exec.LookPath("tmux")
@@ -196,23 +205,29 @@ func notifyOnce(paths []string, before int, cmd string) error {
 			due = append(due, nt)
 		}
 	}
+	// -cmd が無ければ tmux とデスクトップの両方に出す。
 	// tmux の表示は後のもので上書きされるので、1回分をまとめて1行で出す
+	inTmux := false
 	if cmd == "" && len(due) > 0 {
 		var ms []string
 		for _, nt := range due {
 			ms = append(ms, nt.title+"  "+nt.body)
 		}
-		if tmuxNotify("nichiji: " + strings.Join(ms, "  |  ")) {
-			for _, nt := range due {
-				st[nt.key] = now()
-			}
-			return saveState(sp, st)
-		}
+		inTmux = tmuxNotify("nichiji: " + strings.Join(ms, "  |  "))
 	}
 	for _, nt := range due {
-		if err := send(cmd, nt); err != nil {
+		var err error
+		if inTmux {
+			// tmux に出せたので、デスクトップが無くても失敗にせず、端末にも出さない
+			_, err = desktop("nichiji: "+nt.title, nt.body)
+		} else {
+			err = send(cmd, nt)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "notify:", err)
-			continue
+			if !inTmux {
+				continue
+			}
 		}
 		st[nt.key] = now()
 	}
