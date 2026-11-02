@@ -64,7 +64,7 @@ function __nichiji_candidates
 	switch "$sub"
 		case set done rm
 			test $n -eq 0; and test -z "$other"; and nichiji __complete matchdesc "$file" $closed 2>/dev/null
-		case add find free notify completion
+		case add find free notify completion when
 		case '*'
 			test (count $t) -eq 1; and printf '%s\n' ` + commands + `
 			__fish_complete_path $cur

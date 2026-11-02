@@ -74,9 +74,11 @@ func (m *lister) listSegs(o occ) []seg {
 	return segs
 }
 
-// list は when の既定表示の真似。予定のある日だけを並べる。
-// list は直近を出す。overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
-func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo bool) int {
+// list は直近を出す。シェルでは最後の行がプロンプトのすぐ上に来るので、
+// 未定と知らせを上に、日の並びは遠い日から今日へ、今日をいちばん下に出す。
+// 済んだ予定([done] [canceled])は all のときだけ出す。
+// overdueOnly なら期限切れ(LATE)だけを出し、その件数を返す。
+func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo, all bool) int {
 	width := 0 // 0 = 切らない(パイプのときは全文を出す)
 	if fd := os.Stdout.Fd(); cut && term.IsTerminal(fd) {
 		if cw, _, err := term.GetSize(fd); err == nil {
@@ -92,37 +94,39 @@ func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo boo
 	m := &lister{files: files, listMemo: memo}
 	today := day(now())
 	n := 0
+	var blocks [][]string // 日ごとの行(見出しと予定)。日付の順に集めて、最後に逆から出す
 	for i := -past; i <= days; i++ {
 		d := today.AddDate(0, 0, i)
-		os := occsOn(m.all(), d)
-		if overdueOnly {
-			var od []occ
-			for _, o := range os {
-				if overdue(o) {
-					od = append(od, o)
-				}
+		var os []occ
+		for _, o := range occsOn(m.all(), d) {
+			if (overdueOnly && !overdue(o)) || (!all && isDone(o.e)) {
+				continue
 			}
-			os = od
+			os = append(os, o)
 		}
 		if len(os) == 0 {
 			continue
 		}
-		head := dateLabel(d)
 		st := stHead
 		if i == 0 {
 			st = stToday
 		}
-		fmt.Fprintln(w, st.Render(head))
+		b := []string{st.Render(dateLabel(d))}
 		for _, o := range os {
-			fmt.Fprintln(w, render(m.listSegs(o)))
+			b = append(b, render(m.listSegs(o)))
 			n++
 		}
+		blocks = append(blocks, b)
 	}
+	defer func() {
+		for i := len(blocks) - 1; i >= 0; i-- {
+			for _, l := range blocks[i] {
+				fmt.Fprintln(w, l)
+			}
+		}
+	}()
 	if overdueOnly {
 		return n
-	}
-	if n == 0 {
-		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("nothing in the next %d days", days)))
 	}
 	var us []*Entry
 	for _, e := range m.all() {
@@ -130,16 +134,18 @@ func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo boo
 			us = append(us, e)
 		}
 	}
+	if len(us) > 0 {
+		// 日時を決める気になるよう、件数だけでなく中身も常に見せる
+		fmt.Fprintln(w, stHead.Render("undated"))
+		for _, e := range us {
+			fmt.Fprintln(w, render(m.listSegs(occ{e: e})))
+		}
+	}
 	if nt := len(undatedEntries(files)); nt > 0 {
 		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d entries have no time: schedule them (nichiji ls -notime)", nt)))
 	}
-	if len(us) == 0 {
-		return n
-	}
-	// 日時を決める気になるよう、件数だけでなく中身も常に見せる
-	fmt.Fprintln(w, stHead.Render("undated"))
-	for _, e := range us {
-		fmt.Fprintln(w, render(m.listSegs(occ{e: e})))
+	if n == 0 {
+		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("nothing in the next %d days", days)))
 	}
 	return n
 }

@@ -14,8 +14,9 @@ import (
 const usage = `nichiji - a tiny planner on CSV files (datetime,text[,memo]).
 One file = one person or one machine.
 
-  nichiji [ls] [-days 14] [-past 0] [-memo] [-full] [FILE|DIR ...]
-      list upcoming entries and undated ones (* = has a memo)
+  nichiji [ls] [-days 14] [-past 0] [-memo] [-full] [-all] [FILE|DIR ...]
+      list upcoming entries and undated ones, today at the bottom
+      (* = has a memo); [done] [canceled] only with -all
   nichiji ls -notime [FILE ...]
       entries without a time (undated first, then by date); exit 1 if any
   nichiji ls -overdue [FILE ...]
@@ -38,11 +39,17 @@ One file = one person or one machine.
       = set -status done -end now
   nichiji rm [-f FILE] (WORD | -match WORD | -at WHEN)
       remove one entry
+  nichiji uniq FILE FILE ...
+      entries found in only one of the files (same date and text = same);
+      exit 1 if any
+  nichiji when [WHEN]
+      how dates are written, read against today; with WHEN, only that one
   nichiji free [-len 60] [-from 9:00] [-to 18:00] [-days 14] [FILE ...]
       gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
       notify before start and when LATE (once each), and daily about entries
-      without a time
+      without a time; with no -cmd, shown on every attached tmux client,
+      else as a desktop/phone notification
   nichiji completion bash|fish
       print tab completion; add to ~/.bashrc: eval "$(nichiji completion bash)"
       or to config.fish: nichiji completion fish | source
@@ -88,7 +95,7 @@ func main() {
 		completion(args[1:])
 		return
 	}
-	if len(args) > 0 && strings.Contains(" add ls free set done rm find notify check ", " "+args[0]+" ") {
+	if len(args) > 0 && strings.Contains(" add ls free set done rm find notify check uniq when ", " "+args[0]+" ") {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("nichiji", flag.ExitOnError)
@@ -98,7 +105,7 @@ func main() {
 	when := fs.String("d", "", "date/time")
 	days := fs.Int("days", 14, "days ahead")
 	past := fs.Int("past", 0, "days back")
-	fs.Bool("all", false, "set/done/rm: Tab also offers [done] and [canceled] entries")
+	lall := fs.Bool("all", false, "ls: also show [done] and [canceled]; set/done/rm: Tab also offers them")
 	fs.Bool("u", false, "ls: no effect, undated entries are always listed (kept for old scripts)")
 	length := fs.Int("len", 60, "free: minutes needed")
 	fromS := fs.String("from", "9:00", "free: day starts")
@@ -245,6 +252,12 @@ func main() {
 		}
 		return
 	}
+	if sub == "when" {
+		if err := whenHelp(os.Stdout, fs.Args()); err != nil {
+			die(err)
+		}
+		return
+	}
 	if sub == "notify" {
 		ps := expandArgs(fs.Args())
 		if len(ps) == 0 {
@@ -282,11 +295,20 @@ func main() {
 			if p == 0 {
 				p = 30
 			}
-			if list(os.Stdout, files, p, 0, !*full, true, *lmemo) > 0 {
+			if list(os.Stdout, files, p, 0, !*full, true, *lmemo, true) > 0 {
 				os.Exit(1)
 			}
 		default:
-			list(os.Stdout, files, *past, *days, !*full, false, *lmemo)
+			list(os.Stdout, files, *past, *days, !*full, false, *lmemo, *lall)
+		}
+		return
+	}
+	if sub == "uniq" {
+		if len(files) < 2 {
+			die(fmt.Errorf("usage: nichiji uniq FILE FILE ..."))
+		}
+		if uniq(os.Stdout, files) > 0 {
+			os.Exit(1)
 		}
 		return
 	}
@@ -309,8 +331,10 @@ func main() {
 
 // allowed はコマンドごとに使えるオプション(-now はどれでも)。関係の無いものは打ち間違いとして止める。
 var allowed = map[string]string{
-	"":       "days past u memo full overdue notime",
-	"ls":     "days past u memo full overdue notime",
+	"":       "days past u memo full overdue notime all",
+	"ls":     "days past u memo full overdue notime all",
+	"uniq":   "",
+	"when":   "",
 	"rm":     "f match at all",
 	"check":  "",
 	"find":   "",
@@ -359,7 +383,7 @@ func checkFlags(fs *flag.FlagSet, sub string) {
 	})
 	// Go の flag はファイル名の後ろのオプションを読まないので、ファイル名と取り違えないよう止める
 	for _, a := range fs.Args() {
-		if strings.HasPrefix(a, "-") && sub != "add" {
+		if strings.HasPrefix(a, "-") && sub != "add" && sub != "when" {
 			die(fmt.Errorf("%s: put options before the files (see nichiji -h)", a))
 		}
 	}

@@ -143,6 +143,27 @@ func send(cmd string, nt notice) error {
 	return err
 }
 
+// tmuxNotify は tmux に繋いでいるすべての画面の下の行に、10秒だけ msg を出す(-cmd が無いときの既定)。
+// cron などから呼んでも届くよう、$TMUX ではなく繋いでいる画面の有無で決める。出せなければ false。
+func tmuxNotify(msg string) bool {
+	p, err := exec.LookPath("tmux")
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(p, "list-clients", "-F", "#{client_name}").Output()
+	if err != nil {
+		return false
+	}
+	msg = strings.ReplaceAll(msg, "#", "##") // # は tmux の書式の印
+	sent := false
+	for _, c := range strings.Fields(string(out)) {
+		if exec.Command(p, "display-message", "-c", c, "-d", "10000", msg).Run() == nil {
+			sent = true
+		}
+	}
+	return sent
+}
+
 // isWSL は WSL の中で動いているか。
 func isWSL() bool {
 	b, err := os.ReadFile("/proc/version")
@@ -169,10 +190,26 @@ func notifyOnce(paths []string, before int, cmd string) error {
 	}
 	sp := statePath()
 	st := loadState(sp)
+	var due []notice
 	for _, nt := range dueNotices(files, before) {
-		if _, done := st[nt.key]; done {
-			continue
+		if _, done := st[nt.key]; !done {
+			due = append(due, nt)
 		}
+	}
+	// tmux の表示は後のもので上書きされるので、1回分をまとめて1行で出す
+	if cmd == "" && len(due) > 0 {
+		var ms []string
+		for _, nt := range due {
+			ms = append(ms, nt.title+"  "+nt.body)
+		}
+		if tmuxNotify("nichiji: " + strings.Join(ms, "  |  ")) {
+			for _, nt := range due {
+				st[nt.key] = now()
+			}
+			return saveState(sp, st)
+		}
+	}
+	for _, nt := range due {
 		if err := send(cmd, nt); err != nil {
 			fmt.Fprintln(os.Stderr, "notify:", err)
 			continue

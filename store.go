@@ -262,13 +262,16 @@ func parseInput(s string, base time.Time) (string, error) {
 	if _, _, _, _, err := parseRule(s); err == nil {
 		return s, nil
 	} else if strings.ContainsAny(s, "=<>") {
-		return "", fmt.Errorf("cannot read repeat rule: %v", err)
+		return "", fmt.Errorf("cannot read repeat rule: %v\n%s", err, whenHint)
 	}
 	if c, ok := canon(fmt.Sprintf("%d-%s", base.Year(), s)); ok {
 		return c, nil
 	}
-	return "", fmt.Errorf("cannot read date/time: %q", s)
+	return "", fmt.Errorf("cannot read date/time: %q\n%s", s, whenHint)
 }
+
+const whenHint = `write it like: 2026-12-24 14:00 | 12/24 14:00-15:30 | 12/24 | 14:00 | 2pm | +3 9:00 | w=sun 10:00
+see how a date is read: nichiji when '12/24 14:00'   (all forms: nichiji when)`
 
 func (e *Entry) setRaw(raw string) {
 	e.Raw, e.src = raw, ""

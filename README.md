@@ -15,11 +15,13 @@ go install github.com/Mokkori-Tom/nichiji@latest
 ## 使い方
 
 ```sh
-nichiji examples/曜日.csv tom.csv hana.csv   # 直近の予定(nichiji ls と同じ)
+nichiji examples/曜日.csv tom.csv hana.csv   # 直近の予定(nichiji ls と同じ)。今日がいちばん下、済んだ予定は -all で
 nichiji ls -notime tom.csv                    # 時刻の決まっていない予定
 nichiji add -f tom.csv '10/30 19:00-21:00 飲み会'
 nichiji set -f tom.csv 飲み<Tab>              # 今の -d -text -m まで展開されるので、直して Enter
 nichiji check tom.csv                         # エディタで書き換えたあとの確認
+nichiji when                                  # 日時の書き方(今日を基準にどう読むか)。nichiji when '12/24 14:00' で1つだけ
+nichiji uniq 休日予定.csv task.csv            # どれか1つにしか無い予定(日時と内容が同じなら同じ予定)
 nichiji -h                                    # ほかのコマンド(find / set / done / rm / free / notify)
 ```
 
@@ -53,7 +55,9 @@ w=日 10:00-11:00,教会
 
 ## tmux に通知する
 
-`nichiji notify` は `-cmd` のコマンドに題と本文を引数で渡す。始まる10分前(`-before` で変更)に、tmux のステータスラインと履歴へ出す例が `examples/` にある。
+`nichiji notify` は、`-cmd` が無く tmux に繋いでいる画面があれば、その全部の下の行に10秒だけ出す(既定)。tmux が無ければデスクトップやスマホの通知に出す。
+
+`-cmd` を付けると、そのコマンドに題と本文を引数で渡す。始まる10分前(`-before` で変更)に、tmux のステータスラインと履歴へ残す例が `examples/` にある。
 
 ```sh
 mkdir -p ~/bin ~/.config/systemd/user

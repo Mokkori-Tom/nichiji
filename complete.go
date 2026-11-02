@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const commands = "ls add set done rm find free check notify completion"
+const commands = "ls add set done rm find free check uniq when notify completion"
 
 // bashCompletion は bash のタブ補完。候補はその場で nichiji 自身に聞くので、コマンドや予定が増えても直さなくてよい。
 const bashCompletion = `_nichiji() {
