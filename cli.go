@@ -144,10 +144,37 @@ func list(w io.Writer, files []*File, past, days int, cut, overdueOnly, memo, al
 	if nt := len(undatedEntries(files)); nt > 0 {
 		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d entries have no time: schedule them (nichiji ls -notime)", nt)))
 	}
+	// 一覧に出ていない過去の日の LATE は見落としやすいので、済ませるか取り消すよう促す
+	if nl := len(pastLate(files, past)); nl > 0 {
+		fmt.Fprintln(w, stWarn.Render(fmt.Sprintf("%d past entries are not done (LATE): check them (nichiji ls -overdue)", nl)))
+	}
 	if n == 0 {
 		fmt.Fprintln(w, stDim.Render(fmt.Sprintf("nothing in the next %d days", days)))
 	}
 	return n
+}
+
+// lateDays は、過去の LATE をさかのぼって探す日数(ls -overdue・check と同じ)。
+const lateDays = 30
+
+// pastLate は、昨日から lateDays 日前までのうち、ls の -past で見せている日より前にある LATE。
+// 古い順に返す。label のファイルは除く。
+func pastLate(files []*File, past int) []occ {
+	var out []occ
+	today := day(now())
+	for i := -lateDays; i < -past && i < 0; i++ {
+		for _, f := range files {
+			if f.Label {
+				continue
+			}
+			for _, o := range occsOn(f.Entries(), today.AddDate(0, 0, i)) {
+				if overdue(o) {
+					out = append(out, o)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func render(segs []seg) string {

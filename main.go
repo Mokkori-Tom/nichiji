@@ -16,7 +16,8 @@ One file = one person or one machine.
 
   nichiji [ls] [-days 14] [-past 0] [-memo] [-full] [-all] [FILE|DIR ...]
       list upcoming entries and undated ones, today at the bottom
-      (* = has a memo); [done] [canceled] only with -all
+      (* = has a memo); [done] [canceled] only with -all;
+      warns about LATE entries on earlier days (up to 30 days back)
   nichiji ls -notime [FILE ...]
       entries without a time (undated first, then by date); exit 1 if any
   nichiji ls -overdue [FILE ...]
@@ -48,8 +49,8 @@ One file = one person or one machine.
       gaps where every file is free
   nichiji notify [-before 10] [-cmd CMD] [-watch] [FILE ...]
       notify before start and when LATE (once each), and daily about entries
-      without a time; with no -cmd, shown both on every attached tmux client
-      and as a desktop/phone notification
+      without a time and LATE entries on earlier days; with no -cmd, shown
+      both on every attached tmux client and as a desktop/phone notification
   nichiji completion bash|fish
       print tab completion; add to ~/.bashrc: eval "$(nichiji completion bash)"
       or to config.fish: nichiji completion fish | source
@@ -60,6 +61,7 @@ One file = one person or one machine.
 
 WHEN: 2026-10-25 14:00 | 14:00-15:30 (with end) | 10/25 | 14:00 | 2pm | +3
       | +3 9:00 | empty = undated
+range: 12/24~12/26 (every day, both ends included) 12/24~26 9:00-17:00
 repeat: */12/25 (yearly) 1990*/8/29 (\a in text = age)
         w=sun 10:00-11:00 (weekly) d=1|d=15 (monthly) w=sat&b=1 (last Saturday)
         m=1&w=mon&a=2 (2nd Monday of January)
@@ -293,7 +295,7 @@ func main() {
 			// 期限切れは過去にあるので、-past を指定しなければ30日前から見る
 			p := *past
 			if p == 0 {
-				p = 30
+				p = lateDays
 			}
 			if list(os.Stdout, files, p, 0, !*full, true, *lmemo, true) > 0 {
 				os.Exit(1)

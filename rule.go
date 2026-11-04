@@ -19,6 +19,7 @@ import (
 //	m=1&w=月&a=2   1月の第2月曜
 //	w=金&!(m=12&d=25)
 //	w=月 10:00-11:30   終わりの時刻も書ける
+//	2026-12-24~2026-12-26   その間の毎日(両端を含む)
 //
 // 変数 w 曜日 m 月 d 日 y 年 a 第n(1〜7日が1) b 最後からn n 月の日数
 // 演算 = != < > <= >=、& | ! ( )
@@ -26,6 +27,7 @@ type rule func(t time.Time) bool
 
 var (
 	reYearly  = regexp.MustCompile(`^(\d{4})?\*-(\d{1,2})-(\d{1,2})$`)
+	reRange   = regexp.MustCompile(`^(\d{4}-\d{1,2}-\d{1,2})~(\d{4}-\d{1,2}-\d{1,2})$`)
 	reRuleTim = regexp.MustCompile(`^(.*\S)\s+(\d{1,2}):(\d{2})(?:-(\d{1,2}):(\d{2}))?$`)
 )
 
@@ -56,6 +58,14 @@ func parseRule(s string) (r rule, min, emin, base int, err error) {
 		}
 		base, _ = strconv.Atoi(m[1])
 		return func(t time.Time) bool { return int(t.Month()) == mo && t.Day() == d }, min, emin, base, nil
+	}
+	if m := reRange.FindStringSubmatch(s); m != nil {
+		a, ka := parseWhen(m[1])
+		b, kb := parseWhen(m[2])
+		if ka != kDate || kb != kDate || b.Before(a) {
+			return nil, 0, 0, 0, fmt.Errorf("bad range: %s (from~to, from <= to)", s)
+		}
+		return func(t time.Time) bool { return !t.Before(a) && !t.After(b) }, min, emin, 0, nil
 	}
 	if !strings.ContainsAny(s, "=<>") {
 		return nil, 0, 0, 0, fmt.Errorf("not a repeat rule")

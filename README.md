@@ -16,8 +16,10 @@ go install github.com/Mokkori-Tom/nichiji@latest
 
 ```sh
 nichiji examples/曜日.csv tom.csv hana.csv   # 直近の予定(nichiji ls と同じ)。今日がいちばん下、済んだ予定は -all で
+                                              # 前の日に済ませていない予定(LATE)があれば、確認するよう上に出す
 nichiji ls -notime tom.csv                    # 時刻の決まっていない予定
 nichiji add -f tom.csv '10/30 19:00-21:00 飲み会'
+nichiji add -f tom.csv '12/24~26 9:00-17:00 研修'  # 何日から何日まで(毎日 9:00-17:00)
 nichiji set -f tom.csv 飲み<Tab>              # 今の -d -text -m まで展開されるので、直して Enter
 nichiji check tom.csv                         # エディタで書き換えたあとの確認
 nichiji when                                  # 日時の書き方(今日を基準にどう読むか)。nichiji when '12/24 14:00' で1つだけ
@@ -46,16 +48,21 @@ fish では候補の説明に今の日時とメモを出す。展開のために
 2026-10-22 13:00-15:30,研修
 ,いつか本を返す
 w=日 10:00-11:00,教会
+2026-12-24~2026-12-26 09:00-17:00,出張
+2026-12-30~2027-01-03,帰省
 ```
 
 - 1列目 日時、2列目 内容、3列目 メモ(無くてよい)。CSV のルール(RFC 4180)どおり
-- 日時が空なら未定。繰り返しの書き方は `nichiji -h`
+- 日時が空なら未定。繰り返しの書き方は `nichiji -h`、今日を基準にどう読むかは `nichiji when`
+- 何日から何日までは `開始~終了`(両端の日を含む)。後ろに時刻を書くと毎日その時刻になる。入力では `12/24~26`(同じ月)、`12/30~1/3`(年をまたぐ)、`〜` も使える
 - `# nichiji: label` の行があるファイル(曜日など)は、ほかの予定がある日に添えるだけ
 - ファイルを並べ替えるなら、セルの中の改行を壊さないツールで(例: `mlr --csv -N --allow-ragged-csv-input --pass-comments sort -f 1`)
 
 ## tmux に通知する
 
-`nichiji notify` は、`-cmd` が無ければ、tmux に繋いでいる画面の全部の下の行に10秒だけ出し、デスクトップやスマホの通知(termux-notification / notify-send / WSL なら Windows の通知)にも出す。どちらも無ければ端末に出してベルを鳴らす。
+`nichiji notify` は、始まる前、終わりを過ぎても `[reserved]` `[running]` のまま(LATE)のとき、時刻の無い予定があるときに知らせる。前の日の LATE は、済ませる(`nichiji done`)か取り消す(`nichiji set 語 -status canceled`)まで1日1回知らせる。
+
+`-cmd` が無ければ、tmux に繋いでいる画面の全部の下の行に10秒だけ出し、デスクトップやスマホの通知(termux-notification / notify-send / WSL なら Windows の通知)にも出す。どちらも無ければ端末に出してベルを鳴らす。
 
 `-cmd` を付けると、そのコマンドに題と本文を引数で渡す。始まる10分前(`-before` で変更)に、tmux のステータスラインと履歴へ残す例が `examples/` にある。
 

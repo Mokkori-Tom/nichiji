@@ -73,6 +73,11 @@ func dueNotices(files []*File, before int) []notice {
 		out = append(out, notice{"undated|" + day(n).Format("2006-01-02"),
 			fmt.Sprintf("%d entries have no time: schedule them", len(us)), "first: " + short(us[0].Text, 40) + "  (nichiji ls -notime)"})
 	}
+	// 前の日の LATE は上で1回知らせたきりなので、済ませるか取り消すまで1日1回促す
+	if ls := pastLate(files, 0); len(ls) > 0 {
+		out = append(out, notice{"latepast|" + day(n).Format("2006-01-02"),
+			fmt.Sprintf("%d past entries are not done (LATE): check them", len(ls)), "oldest: " + short(ls[0].e.Text, 40) + "  (nichiji ls -overdue)"})
+	}
 	return out
 }
 

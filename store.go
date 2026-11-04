@@ -238,12 +238,75 @@ func splitWhen(s string, base time.Time) (raw, text string, ok bool) {
 	return "", s, false
 }
 
+var (
+	reRangeIn   = regexp.MustCompile(`^(\S+?)\s*~\s*(\S+?)(?:\s+(\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?))?$`)
+	reDayOnly   = regexp.MustCompile(`^\d{1,2}$`)
+	reYearFirst = regexp.MustCompile(`^\d{4}-`)
+)
+
+// rangeInput は「12/24~12/26」「12/24~26 9:00-17:00」を 2026-12-24~2026-12-26 の形にする。
+// 年を省けば始まりは base の年、終わりは始まりより後になる年。終わりが日だけなら始まりと同じ月。
+func rangeInput(s string, base time.Time) (string, bool) {
+	m := reRangeIn.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	date := func(x string, year int) (time.Time, bool) {
+		if t, k := parseWhen(x); k == kDate {
+			return t, true
+		}
+		t, k := parseWhen(fmt.Sprintf("%d-%s", year, x))
+		return t, k == kDate
+	}
+	from, ok := date(m[1], base.Year())
+	if !ok {
+		return "", false
+	}
+	to := m[2]
+	if reDayOnly.MatchString(to) {
+		to = fmt.Sprintf("%d-%s", from.Month(), to)
+	}
+	until, ok := date(to, from.Year())
+	if !ok {
+		return "", false
+	}
+	if until.Month() < from.Month() && !reYearFirst.MatchString(m[2]) {
+		until = until.AddDate(1, 0, 0) // 12/30~1/3 は年をまたぐ
+	}
+	out := formatWhen(from, kDate) + "~" + formatWhen(until, kDate)
+	if m[3] != "" {
+		st, em := splitEnd(m[3])
+		h, err := hhmm(st)
+		if err != nil {
+			return "", false
+		}
+		out += fmt.Sprintf(" %02d:%02d", h/60, h%60)
+		if em >= 0 {
+			out += fmt.Sprintf("-%02d:%02d", em/60, em%60)
+		}
+	}
+	return out, true
+}
+
 // parseInput は人が打つ日時を正規化する。
 // 空=未定 / 2026-10-25 14:00 / 10/25 14:00 / 10/25 / 14:00(base の日) / +3 / +3 9:00(今日から)
+// / 12/24~12/26(その間の毎日、時刻も付けられる)
 func parseInput(s string, base time.Time) (string, error) {
 	s = strings.TrimSpace(strings.ReplaceAll(ampm(s), "/", "-"))
+	s = strings.NewReplacer("〜", "~", "～", "~").Replace(s)
 	if s == "" {
 		return "", nil
+	}
+	if strings.Contains(s, "~") {
+		r, ok := rangeInput(s, base)
+		if ok {
+			_, _, _, _, err := parseRule(r)
+			if err == nil {
+				return r, nil
+			}
+			return "", fmt.Errorf("cannot read range: %v\n%s", err, whenHint)
+		}
+		return "", fmt.Errorf("cannot read range: %q\n%s", s, whenHint)
 	}
 	if m := reRel.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[1])
@@ -271,6 +334,7 @@ func parseInput(s string, base time.Time) (string, error) {
 }
 
 const whenHint = `write it like: 2026-12-24 14:00 | 12/24 14:00-15:30 | 12/24 | 14:00 | 2pm | +3 9:00 | w=sun 10:00
+               12/24~12/26 (every day from 12/24 to 12/26) | 12/24~26 9:00-17:00
 see how a date is read: nichiji when '12/24 14:00'   (all forms: nichiji when)`
 
 func (e *Entry) setRaw(raw string) {

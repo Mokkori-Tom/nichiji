@@ -56,6 +56,9 @@ var whenExamples = []struct{ in, note string }{
 	{"+1 9:00", "tomorrow"},
 	{"+7", "in 7 days, date only"},
 	{"", ""},
+	{"12/24~12/26", "every day from Dec 24 to 26, date only"},
+	{"12/24~26 9:00-17:00", "Dec 24 to 26, 9:00-17:00 each day"},
+	{"12/30~1/3 0:00-24:00", "across the new year, all day"},
 	{"w=sun 10:00-11:00", "every Sunday"},
 	{"w=mon|w=thu 9:00", "every Monday and Thursday"},
 	{"d=1|d=15 10:00", "1st and 15th of every month"},
@@ -116,5 +119,6 @@ func whenHelp(w io.Writer, args []string) error {
 	}
 	fmt.Fprintln(w, "w: sun-sat  d: day of month  m: month  a: n-th weekday  b: n-th from the end;  | = or, & = and")
 	fmt.Fprintln(w, "/ and - are the same (12/24 = 12-24); the year is this year if left out")
+	fmt.Fprintln(w, "from~to: both days included; ~ may also be 〜; a time after it applies to each day")
 	return nil
 }
